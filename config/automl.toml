@@ -1,0 +1,62 @@
+# AutoML search configuration.
+#
+# Read by `aegis_ml.automl.search`. Every value here is a DECISION, not a default that
+# happened to be typed — the comments say what changes if you move it.
+
+[search]
+# Wall-clock seconds handed to the time-budgeted tiers (FLAML, AutoGluon). This is a
+# BUDGET, not a target: a tier that finishes early stops early. 300 s is chosen so a full
+# `train_flow` fits inside a coffee break on hackathon day; raise it for the final run.
+time_budget = 300
+
+# Tiers to attempt, weakest-first. A tier that is not installed does NOT silently vanish —
+# it appears in `Leaderboard.tiers_skipped` with the reason, because an empty leaderboard
+# slot and an unavailable dependency look identical otherwise.
+tiers = ["baseline", "flaml", "autogluon", "tabpfn"]
+
+# Run the heavy tiers in the isolated .venv-ml via the subprocess bridge. Set false only
+# if you have installed the `strong` extra into the serving venv, which is not recommended:
+# see decision D1 in finalplan.md for why the caps make that fight.
+use_trainer_venv = true
+
+seed = 7
+
+[baseline]
+# The always-available tier. These mirror aegis.ml.model's own hyperparameters, so the
+# baseline recipe is exactly what Aegis would have trained on its own — which makes the
+# leaderboard's first row a genuine "what you had before" reference point.
+estimators = ["xgboost", "hist_gradient_boosting", "random_forest", "extra_trees"]
+
+[flaml]
+estimators = ["xgboost", "lgbm", "rf", "extra_tree"]
+# FLAML's own early-stopping metric. Keep it aligned with the gate's primary metric, or the
+# search optimises one thing and the gate ranks another.
+metric = "auto"
+
+[autogluon]
+# `best_quality` builds multi-layer stacked ensembles. Its winner is usually NOT portable
+# back into the serving venv — that is expected and handled: the score is reported as the
+# accuracy ceiling in the model card, and the best PORTABLE candidate becomes the recipe.
+preset = "best_quality"
+
+[tabpfn]
+# TabPFN-2.5 is the current state of the art on TabArena and wins against tuned trees on
+# datasets up to roughly 10k rows x 500 features — which is exactly the size synthetic
+# hackathon data lands at.
+#
+# LICENCE: Prior Labs License. Research and evaluation are permitted; commercial and
+# production use are NOT. A hackathon demo is evaluation use. Every model card this tier
+# touches prints the notice. Disable entirely with AEGIS_ML_ENABLE_TABPFN=0.
+max_rows = 10000
+max_features = 500
+device = "cpu"
+
+[hpo]
+# Optuna. TPE overtakes random search from roughly the 30th trial at 3-5 important
+# hyperparameters, which is why the default is comfortably above that.
+n_trials = 60
+timeout = 600
+sampler = "tpe"
+pruner = "hyperband"
+# SQLite-backed studies resume after a crash instead of restarting a 5-minute search.
+persist = true

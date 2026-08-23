@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Environments — the two-venv split (see docs/10-architecture-decisions.md, D1)
+.venv/
+.venv-ml/
+venv/
+ENV/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# Model artifacts and run outputs are reproducible from code + config, never committed.
+# The registry is the source of truth at RUNTIME; git is the source of truth for HOW to
+# rebuild it. Committing a 600 KB joblib would also defeat the dataset-digest provenance
+# story, since a checked-in artifact has no recorded training frame.
+registry_store/
+*.joblib
+*.onnx
+*.parquet
+mlruns/
+optuna/
+.prefect/
+
+# Local scratch
+.DS_Store
+scratch/
+*.log

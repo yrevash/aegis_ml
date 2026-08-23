@@ -1,0 +1,32 @@
+# Drift detection and label-free performance estimation.
+#
+# Read by `aegis_ml.monitor.*`. Thresholds here gate PROMOTION, never SERVING — Aegis
+# serves the model it has and flags it. Withdrawing a model on a drift signal would be a
+# silent downgrade, which is the one thing this platform refuses to do.
+
+[drift]
+# Share of features showing distribution drift. A SHARE, not a single p-value, on purpose:
+# with 12 features, one drifting at p<0.05 is expected by chance roughly half the time, so
+# a per-feature test alone fires constantly on sampling noise and gets ignored.
+warn_share = 0.2
+block_share = 0.4
+
+target_drift_threshold = 0.1
+prediction_drift_threshold = 0.1
+min_current_rows = 200
+
+[performance]
+# NannyML: estimate live performance BEFORE ground truth arrives. CBPE for classification,
+# DLE for regression. Everything it produces is named "estimated" throughout so it can
+# never be read as a measurement.
+enabled = true
+chunk_size = 500
+min_reference_rows = 1000
+
+[gate]
+# The five promotion criteria. A challenger must clear ALL of them.
+min_gain = 0.005          # must beat the champion's primary metric by at least this
+coverage_tolerance = 0.05 # empirical_coverage >= requested_coverage - this
+require_contracts = true
+require_no_leakage = true
+require_slice_parity = true   # worst slice no worse than the champion's worst slice

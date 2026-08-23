@@ -1,0 +1,32 @@
+# Time-series forecasting.
+#
+# `aegis_ml.forecast` is a THIN wrapper over `aegis.forecast`, never a reimplementation.
+# Aegis already ships Nixtla StatsForecast with ConformalIntervals and rolling-origin
+# backtests, and it refuses rather than degrading to a naive line.
+
+[series]
+horizon = 30
+freq = "D"
+season_length = 7      # 7 for daily, 24 for hourly, 12 for monthly, 52 for weekly
+level = 0.9            # REQUESTED coverage. The measured one is a separate field, always.
+
+[models]
+# The baseline is kept and reported even when it loses. A leaderboard showing only the
+# winner cannot tell you whether it won by a nose or a mile, and the margin is what says
+# whether the extra complexity was worth it.
+statsforecast = ["AutoARIMA", "AutoETS", "SeasonalNaive"]
+# Nixtla mlforecast adds global ML models with conformal intervals (`strong` extra).
+mlforecast = ["LGBMRegressor"]
+
+[intervals]
+# Conformal, never parametric. A parametric band assumes a residual distribution nobody
+# checked; a conformal one is calibrated against held-out error and reports its own
+# empirical coverage.
+method = "conformal"
+conformal_windows = 3
+
+[backtest]
+# Rolling origin, split by time. Randomly splitting a time series is a leak, and
+# `aegis.forecast` documents it as such — this config cannot express one.
+windows = 3
+step_size = 7

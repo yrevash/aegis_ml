@@ -1,0 +1,48 @@
+# Data contracts and synthetic-data realism.
+#
+# Read by `aegis_ml.data.contract_check`, `aegis_ml.data.latent` and
+# `aegis_ml.features.leakage`. This file is where "is the data honest?" is decided.
+
+[realism]
+# THE MOST IMPORTANT SETTING IN THIS REPO.
+#
+# A latent function plus a little Gaussian noise gives held-out R^2 ~ 0.99. That is not a
+# good result, it is a tell: it says the data is toy, it makes the conformal interval
+# meaninglessly tight, and it collapses the entire "uncertainty you can audit" story that
+# Aegis is built to demonstrate.
+#
+# So noise is CALIBRATED to a target rather than guessed:
+#     sigma = sqrt(var_signal * (1 - target_r2) / target_r2)
+# Realism becomes a declared property you can verify, not a number someone tuned by feel.
+target_r2 = 0.65                 # regression: aim here
+r2_band = [0.45, 0.80]           # regression: acceptable band
+target_accuracy = 0.78           # classification: aim here
+accuracy_band = [0.65, 0.88]     # classification: acceptable band
+
+# Above this, assume leakage or a trivially-recoverable target and say so loudly.
+# A held-out R^2 of 0.99 on synthetic data is a bug report, not an achievement.
+suspiciously_easy_r2 = 0.95
+suspiciously_easy_accuracy = 0.98
+
+[realism.structure]
+# What makes data look real rather than generated. Each of these puts a genuine, honest
+# ceiling on achievable accuracy that no model can cheat past.
+unobserved_confounders = 2       # drivers that move the target but are NOT emitted as columns
+heteroscedastic = true           # noise scales with the prediction, so intervals widen honestly
+irrelevant_features = 2          # columns that genuinely do not matter; good SHAP shows ~0
+interaction_terms = 1            # so a linear model visibly loses to the boosted ensemble
+missing_rate = 0.04              # MAR, not MCAR: missingness depends on another feature
+label_flip_rate = 0.03           # classification only: measurement error near the boundary
+
+[leakage]
+# A single feature scoring above this against the target is leakage, not signal.
+threshold = 0.98
+# Features known to be legitimately available at prediction time despite scoring high.
+allow = []
+
+[validation]
+# pandera enforcement. `strict` fails the pipeline; otherwise findings are reported and
+# the run continues with them recorded on the model card.
+strict = false
+max_null_share = 0.25
+min_rows = 400

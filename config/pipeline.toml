@@ -1,0 +1,33 @@
+# Pipeline execution.
+#
+# Read by `aegis_ml.pipelines.flows`. Prefect is OPTIONAL by design: flows are ordinary
+# Python functions and a trained artifact must never depend on a server being up.
+
+[run]
+cache = true            # skip a stage whose content-addressed inputs are unchanged
+resume = true           # a re-run after a crash must not repeat a 5-minute AutoML search
+fail_fast = true
+
+[retry]
+# Retries only on the genuinely flaky stage — the AutoML subprocess. Retrying a
+# deterministic stage just burns wall-clock and hides the real error.
+automl_attempts = 2
+backoff_seconds = 5
+
+[prefect]
+enabled = false
+flow_name = "aegis-ml"
+
+[mlflow]
+# An optional MIRROR for the demo UI and lineage. The filesystem registry stays the source
+# of truth, so nothing breaks when the server is down.
+enabled = false
+tracking_uri = ""
+
+[output]
+# What `full_flow` produces for the demo.
+write_model_card = true
+write_shap_report = true
+write_drift_report = true
+write_run_summary = true
+export_onnx = false     # point-predictor only: conformal intervals and SHAP do NOT export

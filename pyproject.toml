@@ -1,0 +1,111 @@
+[project]
+name = "aegis-ml"
+version = "0.1.0"
+description = "SOTA ML/MLOps adapter factory for the Aegis agentic-AI platform."
+readme = "README.md"
+requires-python = ">=3.11"
+# Core stays deliberately thin: `aegis_ml.contracts` imports NOTHING but pydantic, so the
+# backend's light API-schema layer can depend on these shapes without pulling the ML stack.
+# This mirrors aegis/ml/types.py, which has a dedicated test asserting the same property.
+dependencies = [
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "typer>=0.15",
+]
+
+[project.optional-dependencies]
+# ── TIER: serve ────────────────────────────────────────────────────────────────
+# Everything here MUST resolve inside `backend/.venv`, which carries hard caps:
+#   pandas>=2.2,<2.4   (nemoguardrails)
+#   numpy>=1.26,<2.5   (presidio-analyzer; numba/llvmlite via shap)
+#   numba==0.67.0      ([tool.uv] constraint-dependencies)
+# Every package below is pure Python or already-present, and was chosen for that reason.
+serve = [
+    "pandas>=2.2,<2.4",
+    "numpy>=1.26,<2.5",
+    "scikit-learn>=1.5",
+    "joblib>=1.4",
+    # Same pins Aegis's own `ml` extra carries, so installing aegis-ml into the backend
+    # venv is a no-op for these rather than a re-resolve. `mapie` is what makes a
+    # conformal interval a calibrated guarantee instead of a guess; `shap` is what the
+    # spine already uses for attribution and what our reporting layer renders.
+    "xgboost>=2.1",
+    "mapie>=1.4",
+    "shap>=0.46",
+    "pandera>=0.29",
+    "skrub>=0.5",
+    "optuna>=4.0",
+    "flaml[automl]>=2.3",
+    "evidently>=0.7",
+    "nannyml>=0.13",
+    "pyarrow>=17",
+]
+
+# ── TIER: strong ───────────────────────────────────────────────────────────────
+# Installed into the SEPARATE trainer venv (.venv-ml), never into backend/.venv.
+# These pull torch and their own pandas/numpy floors, which is exactly why they are
+# isolated: the AutoML search runs here and returns a portable JSON recipe.
+strong = [
+    "autogluon.tabular[all]>=1.6",
+    "autogluon.timeseries>=1.6",
+    "tabpfn>=2.5",
+    "tabpfn-extensions>=0.1",
+    "torch>=2.4",
+    "sdv>=1.37",
+    "mlforecast>=1.0",
+    "lightgbm>=4.5",
+    "catboost>=1.2",
+]
+
+# ── TIER: mlops ────────────────────────────────────────────────────────────────
+# Optional mirrors and orchestration. Nothing in the critical path depends on them:
+# the filesystem registry is the source of truth and flows run as plain functions.
+mlops = [
+    "mlflow>=3.0",
+    "prefect>=3.1",
+    "onnx>=1.17",
+    "onnxruntime>=1.20",
+    "skl2onnx>=1.17",
+    "onnxmltools>=1.12",
+]
+
+dev = [
+    "aegis-ml[serve]",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.7",
+]
+
+[project.scripts]
+aegis-ml = "aegis_ml.cli:app"
+
+# Ruff config mirrors aegis/pyproject.toml exactly — same select set, same line length,
+# same docstring convention. An integrator running `ruff check` across both trees gets
+# one consistent verdict instead of two dialects.
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "ANN", "D"]
+ignore = ["D203", "D213"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ANN", "D"]
+"templates/*" = ["ANN", "D", "F821"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aegis_ml"]
