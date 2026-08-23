@@ -50,8 +50,9 @@ THE OTHER TRAP — the one that costs the demo
         the label is a closed-form function of the inputs; SHAP re-reads the coefficient
         table back to you, and a reviewer who asks "so what does the model add?" is right.
 
-    :data:`TARGET_R2` sits at 0.65, in the middle of the 0.45–0.80 band, and four devices
-    put it there honestly rather than by hand-tuning a magic constant:
+    :data:`TARGET_R2` declares an oracle ceiling of 0.74, which puts the **measured**
+    held-out R² at 0.62–0.71 — the middle of the 0.45–0.80 band. Four devices put it there
+    honestly rather than by hand-tuning a magic constant:
 
       1. :func:`calibrated_noise_sigma` — σ solved from the *measured* variance of the
          latent values the generator just computed, so it stays correct when a coefficient
@@ -568,14 +569,26 @@ declared R² stays a setting rather than becoming a wish that whatever coefficie
 happened to type quietly overrode.
 """
 
-TARGET_R2: float = 0.65
-"""The held-out R² the label noise is calibrated FOR — the data's own ceiling.
+TARGET_R2: float = 0.74
+"""The R² an **oracle** would score — the ceiling the data itself imposes.
 
-Dead centre of the 0.45–0.80 band. Below it the model looks broken; above roughly 0.9 the
-label is a closed-form function of the inputs and the whole ML story collapses into "we
-wrote a formula and then fitted it". Recorded onto
-:class:`~reference.adapter.schema.DatasetMetadata` by the generator, so a model card can
-state the ceiling rather than leaving a 0.66 looking like an under-fit.
+Read this number carefully, because it is not the number a fitted model scores. It is the
+ratio ``var_signal / (var_signal + var_irreducible)``: what something that already knew the
+generating function above would achieve on this data. A real model is always below it,
+because it has to *estimate* that function from a finite sample. On roughly 1,500 labelled
+rows the gap is about eight points of R², measured — see ``headroom`` in
+:func:`aegis_ml.data.latent.realism_report`, which reports achieved ÷ oracle.
+
+So 0.74 here lands the **measured held-out R² between 0.62 and 0.71** across sample sizes
+and seeds, which is the middle of the 0.45–0.80 realism band and where
+``config/contracts.toml`` asks a domain to sit. Calibrating the ceiling to 0.65 instead
+would put the achieved score near 0.48 — still inside the band, but close enough to its
+floor that an ordinary seed-to-seed swing could drop the pipeline through it.
+
+Below the band a model looks broken; above roughly 0.9 the label is a closed-form function
+of the inputs and the whole ML story collapses into "we wrote a formula and then fitted
+it". Recorded onto :class:`~reference.adapter.schema.DatasetMetadata` by the generator, so a
+model card can state the ceiling rather than leaving a 0.66 looking like an under-fit.
 """
 
 CONFOUNDER_SHARE: float = 0.4
@@ -620,14 +633,16 @@ the floor sits near 0.74 against a band ceiling of 0.88, which leaves room for a
 classifier to demonstrate a real margin.
 """
 
-EXCURSION_SIGNAL_R2: float = 0.86
+EXCURSION_SIGNAL_R2: float = 0.76
 """Signal fidelity of the score the ``excursion_flag`` class boundary is cut from.
 
 **Not the achieved accuracy.** The boundary cut and :data:`LABEL_FLIP_RATE` both cost some
-of it, so the realised held-out accuracy lands lower — which is the number
+of it, so the realised held-out accuracy lands lower — that is the number
 :func:`aegis_ml.data.latent.measure_learnability` reports and the demo prints. This is the
-one knob that moves it, and it is set where it is because that is where the measured
-accuracy lands inside the 0.65–0.88 band with real margin over the majority-class rate.
+one knob that moves it, and at 0.76 the measured accuracy lands **between 0.83 and 0.86**
+across sample sizes and seeds: inside the 0.65–0.88 band, and roughly twelve points clear
+of the ~0.72 majority-class rate, so the classifier is demonstrably doing more than
+predicting "no excursion" forever.
 """
 
 MISSING_GAP_TRIGGER_LEVEL: str = CarrierTier.ECONOMY.value

@@ -95,15 +95,26 @@ def _is_empty_body(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     implementation — so those are filtered by the caller, not here.
     """
     body = list(node.body)
-    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
-        if isinstance(body[0].value.value, str):
-            body = body[1:]
+    first = body[0] if body else None
+    if (
+        isinstance(first, ast.Expr)
+        and isinstance(first.value, ast.Constant)
+        and isinstance(first.value.value, str)
+    ):
+        body = body[1:]
     if not body:
         return True
-    return all(
-        isinstance(stmt, ast.Pass)
-        or (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant) and stmt.value.value is Ellipsis)
-        for stmt in body
+    return all(_is_no_op(stmt) for stmt in body)
+
+
+def _is_no_op(stmt: ast.stmt) -> bool:
+    """Return whether a statement does nothing — ``pass`` or a bare ``...``."""
+    if isinstance(stmt, ast.Pass):
+        return True
+    return (
+        isinstance(stmt, ast.Expr)
+        and isinstance(stmt.value, ast.Constant)
+        and stmt.value.value is Ellipsis
     )
 
 
@@ -178,9 +189,13 @@ def audit(src: Path = SRC) -> list[tuple[str, str, int, str]]:
 
         protocol_members = _collect_protocol_members(tree)
         for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and _is_empty_body(node):
-                if node.lineno not in exempt and not _protocol_or_abstract(node, protocol_members):
-                    findings.append(("empty_body", rel, node.lineno, node.name))
+            if (
+                isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+                and _is_empty_body(node)
+                and node.lineno not in exempt
+                and not _protocol_or_abstract(node, protocol_members)
+            ):
+                findings.append(("empty_body", rel, node.lineno, node.name))
 
         for lineno in _swallowed_imports(tree):
             if lineno in exempt:
@@ -199,7 +214,10 @@ def main() -> int:
             sum(1 for ln in f.read_text(encoding="utf-8").splitlines() if _AUDIT_OK.search(ln))
             for f in files
         )
-        print(f"PASS  no mocks, stubs, empty bodies or swallowed imports in {len(files)} source files")
+        print(
+            f"PASS  no mocks, stubs, empty bodies or swallowed imports "
+            f"in {len(files)} source files"
+        )
         print(f"      {optouts} reviewed opt-out(s); list them with: grep -rn 'audit-ok:' src/")
         return 0
     print(f"FAIL  {len(findings)} finding(s) under src/\n")

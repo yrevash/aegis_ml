@@ -49,7 +49,7 @@ THE CONTRACT (aegis.adapter.GeneratorModule) — these names must survive
 ║ The other half of the trap is noise that is too SMALL. This module measures   ║
 ║ the variance of the latent values it just computed and derives sigma from it  ║
 ║ through ``ml_spec.noise_budget``, so the achievable R² lands at               ║
-║ ``ml_spec.TARGET_R2`` (0.65) instead of at 0.99. A hardcoded ``noise_scale``  ║
+║ ``ml_spec.TARGET_R2`` (0.74) instead of at 0.99. A hardcoded ``noise_scale``  ║
 ║ would be correct exactly until the next coefficient edit, and then silently   ║
 ║ stop being.                                                                   ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
