@@ -81,6 +81,7 @@ from pydantic import BaseModel, Field
 from aegis_ml.serve.tools import ML_TOOL_NAMES, ml_tool_specs
 from reference.adapter.ml_spec import PROBLEM
 from reference.adapter.schema import (
+    ExcursionFlag,
     PackagingType,
     ProductClass,
     RouteClass,
@@ -93,6 +94,7 @@ __all__ = [
     "ALLOWLIST",
     "FIND_SHIPMENTS_DEFAULT_LIMIT",
     "FIND_SHIPMENTS_MAX_LIMIT",
+    "LIVE_HORIZON_HOURS",
     "TOOL_REGISTRY",
     "AddNoteArgs",
     "AuditFn",
@@ -481,6 +483,18 @@ def _aware(moment: datetime) -> datetime:
     return moment.replace(tzinfo=UTC) if moment.tzinfo is None else moment
 
 
+LIVE_HORIZON_HOURS = 30 * 24
+"""How recent a dispatch has to be before wall-clock age is worth quoting on a shortlist.
+
+The generated world is stamped against a fixed epoch so a seed pins it exactly, which means
+its consignments are historical the moment the clock moves past that epoch. Quoting
+"dispatched 14,296 hours ago" against a 47-hour planned lane on every row would put a
+fourteen-month-old alarm beside every shipment in the demo — a signal that fires on
+everything is a signal that means nothing. So the age column is quoted only inside this
+horizon, and the dispatch date is shown outside it.
+"""
+
+
 def _age_hours(shipment: Shipment, *, now: datetime) -> float:
     """Return how many hours ago ``shipment`` was dispatched (0.0 if in the future).
 
@@ -492,6 +506,35 @@ def _age_hours(shipment: Shipment, *, now: datetime) -> float:
         Elapsed hours since dispatch, never negative.
     """
     return max(0.0, (now - _aware(shipment.dispatched_at)).total_seconds() / 3600.0)
+
+
+def _transit_note(shipment: Shipment, *, now: datetime) -> str:
+    """Describe a shipment's duration in the terms its lifecycle stage actually supports.
+
+    A received consignment has an **actual** elapsed transit, which is intrinsic to the
+    record and is the number worth comparing against the plan. One still moving has only an
+    age, which is only meaningful while the consignment is plausibly live — see
+    :data:`LIVE_HORIZON_HOURS`.
+
+    Args:
+        shipment: The record to describe.
+        now: The reference instant.
+
+    Returns:
+        A short phrase for the shortlist row.
+    """
+    planned = f"planned {shipment.transit_hours:.0f}h"
+    if shipment.delivered_at is not None:
+        actual = (
+            _aware(shipment.delivered_at) - _aware(shipment.dispatched_at)
+        ).total_seconds() / 3600.0
+        late = " LATE" if actual > shipment.transit_hours * 1.15 else ""
+        return f"{planned}, actual {actual:.0f}h{late}"
+    age = _age_hours(shipment, now=now)
+    if age > LIVE_HORIZON_HOURS:
+        return f"{planned}, dispatched {_aware(shipment.dispatched_at):%Y-%m-%d}"
+    overdue = " OVERDUE" if age > shipment.transit_hours else ""
+    return f"{planned}, {age:.0f}h elapsed{overdue}"
 
 
 def _matches(shipment: Shipment, parsed: FindShipmentsArgs) -> bool:
@@ -516,13 +559,9 @@ def _matches(shipment: Shipment, parsed: FindShipmentsArgs) -> bool:
         return False
     if parsed.shipper_id is not None and shipment.shipper_id != parsed.shipper_id:
         return False
-    if parsed.excursions_only and shipment.excursion_flag is None:
-        return False
-    if (
-        parsed.excursions_only
-        and shipment.excursion_flag is not None
-        and shipment.excursion_flag.value != "excursion"
-    ):
+    if parsed.excursions_only and shipment.excursion_flag is not ExcursionFlag.EXCURSION:
+        # An unassessed shipment is NOT an excursion-free one; both are excluded here, and
+        # the caller can tell them apart from the "excursion unknown" column in the row.
         return False
     if parsed.text:
         # The **id** is in the haystack deliberately. A planner holding an id from an
@@ -543,13 +582,11 @@ def _describe(shipment: Shipment, *, now: datetime) -> str:
 
     Args:
         shipment: The record to render.
-        now: The reference instant for the age column.
+        now: The reference instant used for the transit/age column.
 
     Returns:
         A single pipe-delimited line.
     """
-    age = _age_hours(shipment, now=now)
-    overdue = " OVERDUE" if age > shipment.transit_hours and shipment.delivered_at is None else ""
     risk = (
         f"{shipment.spoilage_risk_pct:.1f}%"
         if shipment.spoilage_risk_pct is not None
@@ -559,8 +596,8 @@ def _describe(shipment: Shipment, *, now: datetime) -> str:
     return (
         f"{shipment.id} | {shipment.reference} | {shipment.stage.value} | "
         f"{shipment.route_class.value} | {shipment.packaging_type.value} | "
-        f"{shipment.product_class.value} | age {age:.0f}h of {shipment.transit_hours:.0f}h "
-        f"planned{overdue} | spoilage {risk} | excursion {excursion} | {shipment.summary}"
+        f"{shipment.product_class.value} | {_transit_note(shipment, now=now)} | "
+        f"spoilage {risk} | excursion {excursion} | {shipment.summary}"
     )
 
 
@@ -632,7 +669,7 @@ async def find_shipments(args: dict[str, Any], ctx: ToolContext) -> ToolActionRe
 
     header = (
         f"{len(page)} of {total} matching shipment(s) — id | reference | stage | route | "
-        "packaging | product | age/planned | spoilage | excursion | summary:"
+        "packaging | product | transit | spoilage | excursion | summary:"
     )
     return ToolActionResult(
         ok=True,

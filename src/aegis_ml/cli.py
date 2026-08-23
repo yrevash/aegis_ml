@@ -190,34 +190,35 @@ def _load_frame(path: Path) -> Any:  # noqa: ANN401 - a pandas.DataFrame
 def _tier_report() -> list[tuple[str, bool, str]]:
     """Return ``(tier, available, reason)`` for each AutoML tier.
 
-    A tier is available only when its dependency imports **and** its settings flag is on.
-    Both halves are reported, because "AutoGluon is installed but AEGIS_ML_ENABLE_AUTOGLUON=0"
-    and "AutoGluon is not installed" need different fixes and produce the same empty slot on
-    a leaderboard.
+    This is a thin projection of :func:`aegis_ml.automl.tiers.tier_status`, and deliberately
+    holds no availability logic of its own. It used to: it re-derived availability from
+    importability plus the settings flag, which was right until the tabpfn tier grew a third
+    condition — weights on disk or ``TABPFN_TOKEN`` set. ``doctor`` then printed
+    ``RUNS tabpfn`` on a machine where ``.fit()`` raises ``TabPFNLicenseError``, while
+    ``unavailable_reason`` correctly said otherwise. Two answers to one question, and the
+    wrong one was the one a human reads first.
+
+    Returns:
+        ``(tier, available, reason)`` in :data:`TIER_ORDER`, where ``reason`` is a short
+        capability line when available and the remedy-carrying explanation when not.
     """
+    from aegis_ml.automl.tiers import TIER_ORDER, tier_status
+
+    labels = {
+        "baseline": "sklearn + xgboost",
+        "flaml": lambda: f"flaml {_version_of('flaml') or 'installed'}",
+        "autogluon": lambda: f"autogluon.tabular {_version_of('autogluon.tabular') or 'installed'}",
+        "tabpfn": lambda: f"tabpfn {_version_of('tabpfn') or 'installed'}",
+    }
+    status = tier_status()
     rows: list[tuple[str, bool, str]] = []
-
-    sklearn_ok = is_available("sklearn")
-    rows.append(
-        (
-            "baseline",
-            sklearn_ok,
-            "sklearn + xgboost" if sklearn_ok else "scikit-learn is not importable",
-        )
-    )
-
-    for tier, module, enabled, extra in (
-        ("flaml", "flaml", settings.enable_flaml, "aegis-ml[serve]"),
-        ("autogluon", "autogluon.tabular", settings.enable_autogluon, "aegis-ml[strong]"),
-        ("tabpfn", "tabpfn", settings.enable_tabpfn, "aegis-ml[strong]"),
-    ):
-        importable = is_available(module.split(".")[0])
-        if not enabled:
-            rows.append((tier, False, f"disabled by settings (AEGIS_ML_ENABLE_{tier.upper()}=0)"))
-        elif not importable:
-            rows.append((tier, False, f"{module} not importable — `uv pip install '{extra}'`"))
-        else:
-            rows.append((tier, True, f"{module} {_version_of(module) or 'installed'}"))
+    for tier in TIER_ORDER:
+        reason = status[tier]
+        available = reason == "available"
+        if available:
+            label = labels[tier]
+            reason = label() if callable(label) else label
+        rows.append((tier, available, reason))
     return rows
 
 

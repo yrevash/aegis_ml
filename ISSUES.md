@@ -1,4 +1,7 @@
-# Known issues — open, as of 2026-08-24
+# Known issues — as of 2026-08-24
+
+> Resolved entries are struck through and kept, not deleted: how a defect was found is
+> usually more useful than the fact that it is gone.
 
 Everything here was found by **running the code**, not by reading it. Each entry says what
 is wrong, how bad it is, how to reproduce it, and what the fix looks like. Nothing in this
@@ -11,7 +14,7 @@ Severity: **P1** breaks something a user will hit · **P2** wrong or misleading 
 
 ## P1 — will be hit
 
-### 1. `doctor` and the tier module disagree about TabPFN
+### 1. ~~`doctor` and the tier module disagree about TabPFN~~ — FIXED
 `src/aegis_ml/cli.py:190` (`_tier_report`) reimplements tier availability instead of calling
 `aegis_ml.automl.tiers.tier_status()`. It checks only importability, so it misses the
 weights/token gate added to `tiers.unavailable_reason`.
@@ -27,9 +30,10 @@ $ .venv-ml/bin/python -c "from aegis_ml.automl.tiers import unavailable_reason; 
 Two sources of truth for the same question, and the wrong one is the one a human reads
 first on hackathon morning.
 
-**Fix:** delete `_tier_report` and render from `tiers.tier_status()`. One function, one
-answer. Keep the settings-flag distinction the CLI currently makes — `tier_status` already
-reports it.
+**Fixed** in `cli.py`: `_tier_report` is now a thin projection of `tiers.tier_status()` and
+holds no availability logic of its own. Verified in both venvs — the serving venv reports
+both strong tiers as not importable, and the trainer venv correctly reports `skipped tabpfn`
+with the weights/token remedy.
 
 ### 2. No test suite
 `tests/` is empty. The agent writing it was stopped before it produced anything, so there
@@ -43,14 +47,15 @@ the realism band and both learnability guards; recipe JSON round-trip and portab
 refusal; metric direction correctness in `HIGHER_IS_BETTER`; the promotion gate's five
 criteria; registry promote/rollback atomicity against `tmp_path`.
 
-### 3. `reference/` is incomplete
+### 3. ~~`reference/` is incomplete~~ — FIXED
 Present: `problem.py`, `adapter/{__init__,schema,ml_spec,generator}.py`. **Missing:**
 `tools.py`, `personas.py`, `prompts.py`, `memory_spec.py`, `roster.py`, `corpus/__init__.py`,
 the 3 corpus documents, the 2 skill playbooks, and `reference/README.md`.
 
-Until those exist, the reference domain cannot satisfy `aegis.adapter.DomainAdapter` and
-`pytest --pyargs aegis.conformance --aegis-adapter reference.adapter` cannot pass — which
-is the single claim the reference domain exists to make.
+**Fixed.** All ten pieces are present. Verified: `missing_members()` returns `[]`,
+`isinstance(reference.adapter, DomainAdapter)` is True, `resolve_spec` resolves to the domain
+rather than `FALLBACK_SPEC`, learnability R² 0.6236 (in band, not suspiciously easy), and
+**`pytest --pyargs aegis.conformance --aegis-adapter reference.adapter` → 14 passed**.
 
 ---
 
