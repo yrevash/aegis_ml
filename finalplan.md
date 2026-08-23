@@ -16,7 +16,7 @@
 | "`aegis/src/aegis/` is NEVER touched" | Contradicts itself — §6 orders editing `aegis/src/aegis/conformance/_vocabulary.py`. That edit **is** required and **is** sanctioned by `SKILL.md`. Say it once. |
 | ML flows into the agent's reasoning | **Not wired.** `describe_prediction` has zero consumers; `ml_predict` appears in the README's request path but not in `graph.py`'s `NODE_LABELS`. |
 
-Also missing from that plan: the four `web/` console files carrying shipped-domain literals (outside the Python-only vocabulary scan — a demo-killer), the `backend/tests/adapter/*` rewrite, `rsync --delete` vs `cp -r` leaving the old corpus/skills behind, OpenAPI+TS client regeneration, and the ~15 host-bound adapter symbol names beyond the Protocol (`ToolActionResult`, `InMemoryRecordStore`, `GeneratorConfig`, `ToolContext`, `Persona`, `ScopeKind`, `TARGET`, `training_frame`).
+Also missing from that plan: the four `web/` console files carrying shipped-domain literals (outside the Python-only vocabulary scan — a demo-killer), the `backend/tests/adapter/*` rewrite, `rsync --delete` vs `cp -r` leaving the old corpus/skills behind, OpenAPI+TS client regeneration, and the host-bound adapter symbol names beyond the Protocol. That list was verified by grep against `backend/src/app/` and two corrections fell out: `Persona` and `ScopeKind` are **not** host-bound (zero references outside the adapter package), while `AuditFn` and `RecordStore` **are** — `app/mcp/server.py` imports them, and they appear in neither the reference registry's `__all__` nor any checklist. A retarget that renames those two breaks the MCP server with nothing pointing at it.
 
 ---
 

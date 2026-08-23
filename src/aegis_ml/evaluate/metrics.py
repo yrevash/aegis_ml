@@ -288,12 +288,27 @@ def classification_metrics(
             f"`classes_` ordering — an inferred ordering silently permutes the columns and "
             f"produces a real-looking but wrong AUC."
         )
-    out["log_loss"] = float(log_loss(true, proba, labels=list(classes)))
+    # sklearn's log_loss binarises the labels internally in LEXICOGRAPHIC order and does not
+    # re-order the probability columns to match. Passing labels in the estimator's own
+    # ``classes_`` order (or the spec's declaration order) therefore pairs each row's
+    # probability with the wrong class and returns a real-looking, badly wrong number — a
+    # UserWarning is the only symptom. Reorder both together here so the pairing is right
+    # whatever order the caller declared.
+    order = np.argsort(classes.astype(str), kind="stable")
+    out["log_loss"] = float(
+        log_loss(true, proba[:, order], labels=[str(c) for c in classes[order]])
+    )
     if len(classes) == 2:
         out["roc_auc"] = float(roc_auc_score(true == classes[1], proba[:, 1]))
     elif len(np.unique(true)) == len(classes):
         out["roc_auc"] = float(
-            roc_auc_score(true, proba, multi_class="ovr", average="macro", labels=list(classes))
+            roc_auc_score(
+                true.astype(str),
+                proba[:, order],
+                multi_class="ovr",
+                average="macro",
+                labels=[str(c) for c in classes[order]],
+            )
         )
     return out
 

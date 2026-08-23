@@ -32,7 +32,6 @@ The allowlist is tree-only for that reason, not by accident.
 
 from __future__ import annotations
 
-import importlib
 import inspect
 import json
 from pathlib import Path
@@ -193,9 +192,7 @@ def is_portable_kind(kind: str, *, task: str | None = None) -> bool:
     module = PORTABLE_KINDS.get(kind)
     if module is None or not is_available(module.split(".")[0]):
         return False
-    if task is not None and _task_of_kind(kind) not in (None, task):
-        return False
-    return True
+    return not (task is not None and _task_of_kind(kind) not in (None, task))
 
 
 def estimator_class(kind: str, *, task: str | None = None) -> type:
@@ -339,10 +336,7 @@ def _build_one(member: RecipeMember, task: str, random_state: int) -> Any:  # no
     accepted = _accepted_param_names(cls)
     if "random_state" not in params and (accepted is None or "random_state" in accepted):
         params["random_state"] = random_state
-    if (
-        member.kind == "XGBClassifier"
-        and "eval_metric" not in params
-    ):
+    if member.kind == "XGBClassifier" and "eval_metric" not in params:
         # Mirrors aegis.ml.model._classification_members: without an explicit eval_metric
         # XGBoost picks one per-version, which makes two runs of "the same" recipe
         # non-comparable across an xgboost upgrade.

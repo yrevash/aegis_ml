@@ -134,6 +134,16 @@ the majority share plus this margin whenever the majority share is the higher ba
 _SIGMA_SEARCH_ITERATIONS = 40
 """Bisection steps used to hit a requested classification accuracy. Cheap and exact enough."""
 
+_STREAM_CONFOUNDER = 1
+_STREAM_NOISE = 2
+_STREAM_MISSINGNESS = 3
+"""Independent random streams, one per stochastic step — see :meth:`LatentModel._rng`.
+
+Distinct values matter more than the values themselves: sharing a stream between the
+confounder draw and the noise draw makes them the same vector, which silently doubles the
+irreducible spread and lands the realised R² well below the calibrated one.
+"""
+
 TransformName = Literal["identity", "log1p", "sqrt", "tanh", "square", "abs"]
 """Shape functions available to a driver.
 
@@ -493,6 +503,13 @@ class RealismConfig(BaseModel):
             hand-tuned. ``None`` means "use ``LatentModel.noise_scale`` as an absolute σ".
         target_accuracy: The classification analogue, hit by bisecting on σ until the share
             of rows whose noisy score crosses its class boundary matches ``1 − accuracy``.
+        confounder_share: How much of the irreducible error is *structured but unobserved*
+            rather than plain measurement noise. The declared confounders are rescaled to
+            occupy exactly this fraction of the noise budget, which is what lets both knobs
+            be honoured at once: without it, whichever coefficients a domain author happened
+            to write for the confounders would silently dictate the achievable R² and
+            ``target_r2`` would become a request rather than a setting. At ``0.0`` the
+            confounders are switched off entirely and all irreducible error is i.i.d. noise.
         heteroscedastic_feature: Feature whose percentile rank scales the noise, so the
             residual spread differs by region and an adaptive interval has something to
             adapt to. ``None`` keeps the noise homoscedastic.
@@ -510,6 +527,7 @@ class RealismConfig(BaseModel):
 
     target_r2: float | None = Field(default=0.62, gt=0.0, lt=1.0)
     target_accuracy: float | None = Field(default=0.78, gt=0.0, lt=1.0)
+    confounder_share: float = Field(default=0.4, ge=0.0, lt=1.0)
     heteroscedastic_feature: str | None = Field(default=None)
     heteroscedastic_strength: float = Field(default=0.6, ge=0.0, le=4.0)
     label_flip_rate: float = Field(default=0.03, ge=0.0, le=0.4)
@@ -530,7 +548,11 @@ class LatentCalibration(BaseModel):
     Attributes:
         noise_sigma: Standard deviation of the irreducible noise term actually used.
         signal_variance: Variance of the observable latent signal across the frame.
-        confounder_variance: Variance contributed by unobserved drivers.
+        confounder_scale: Factor the declared confounder coefficients were multiplied by to
+            occupy their requested share of the noise budget. A value far from ``1.0`` means
+            the declared coefficients were on a different scale from the target — worth
+            knowing, never worth failing over.
+        confounder_variance: Variance contributed by unobserved drivers, after scaling.
         implied_r2_ceiling: ``signal_var / (signal_var + confounder_var + σ²)`` — the best
             R² any model could achieve on this data, confounders included.
         cut_points: Score thresholds separating classification levels, in level order.
@@ -541,6 +563,7 @@ class LatentCalibration(BaseModel):
 
     noise_sigma: float = Field(default=0.0, ge=0.0)
     signal_variance: float = Field(default=0.0, ge=0.0)
+    confounder_scale: float = Field(default=1.0, ge=0.0)
     confounder_variance: float = Field(default=0.0, ge=0.0)
     implied_r2_ceiling: float = Field(default=0.0)
     cut_points: list[float] = Field(default_factory=list)
@@ -707,10 +730,29 @@ class LatentModel(BaseModel):
 
     # ── the realism layer ─────────────────────────────────────────────────────
 
-    def _rng(self, seed: int | None) -> Any:  # noqa: ANN401 - numpy Generator, imported lazily
-        """Build the seeded numpy generator every stochastic step draws from."""
+    def _rng(self, seed: int | None, stream: int) -> Any:  # noqa: ANN401 - numpy Generator
+        """Build an **independent** seeded generator for one stochastic step.
+
+        The ``stream`` argument is not decoration. Every step here draws from a generator
+        constructed on the spot so that a frame regenerates identically, and a single seed
+        would therefore hand the confounder draw and the noise draw *the same standard
+        normal vector* — making them perfectly correlated, doubling the effective spread and
+        putting the realised R² far below the one :meth:`calibrate` solved for. Nothing would
+        raise; the target would just be harder than declared, which is exactly the class of
+        quiet mis-calibration this module exists to eliminate.
+
+        ``default_rng([seed, stream])`` feeds both values through numpy's ``SeedSequence``,
+        which is designed to produce statistically independent streams from related inputs.
+
+        Args:
+            seed: Overrides :attr:`seed` when given.
+            stream: Which draw this is; see the ``_STREAM_*`` constants.
+
+        Returns:
+            A ``numpy.random.Generator`` independent of the other streams.
+        """
         np = _numpy()
-        return np.random.default_rng(self.seed if seed is None else seed)
+        return np.random.default_rng([self.seed if seed is None else seed, stream])
 
     def _confounder_values(self, n: int, rng: Any) -> Any:  # noqa: ANN401 - ndarray
         """Sum every confounder's drawn contribution for ``n`` rows."""
@@ -726,6 +768,12 @@ class LatentModel(BaseModel):
         The multiplier is driven by the *percentile rank* of the chosen feature rather than
         its raw value, so the effect is identical whether the feature is measured in
         minutes or in millions and no single outlier can blow the noise up by 400×.
+
+        It is then normalised to unit mean square. Without that, turning heteroscedasticity
+        on would quietly *add* variance — the mean of a geometric spread's square is above
+        one — and the R² :meth:`calibrate` solved for would come out low by however much
+        ``heteroscedastic_strength`` happened to be. Normalising keeps the two knobs
+        orthogonal: this one redistributes the noise budget across rows, it never enlarges it.
         """
         np = _numpy()
         pd = _pandas()
@@ -739,23 +787,35 @@ class LatentModel(BaseModel):
                 frame[feature].astype("object").astype(str).factorize()[0], index=frame.index
             )
         ranks = column.rank(pct=True, na_option="keep").fillna(0.5).to_numpy(dtype="float64")
-        # ranks ∈ [0, 1] → multiplier ∈ [1/(1+s), 1+s], geometric so the mean stays ~1.
-        return np.power(1.0 + strength, 2.0 * ranks - 1.0)
+        # ranks ∈ [0, 1] → multiplier ∈ [1/(1+s), 1+s], geometric around 1.
+        multiplier = np.power(1.0 + strength, 2.0 * ranks - 1.0)
+        mean_square = float(np.mean(np.square(multiplier)))
+        if mean_square <= 0.0:
+            return np.ones(len(frame), dtype="float64")
+        return multiplier / math.sqrt(mean_square)
 
     def calibrate(self, frame: pd.DataFrame, *, seed: int | None = None) -> LatentCalibration:
         """Solve the noise scale (and class cuts) that realise the requested difficulty.
 
-        Regression solves in closed form. With ``V`` the variance of the observable signal
-        and ``C`` the variance the confounders add, the achievable R² is
-        ``V / (V + C + σ²)``, so hitting ``target_r2 = r`` needs ``σ² = V(1−r)/r − C``. When
-        the confounders alone already exceed that budget the requested R² is simply not
-        reachable, σ is pinned at zero and a note says so — the ceiling is reported, never
-        quietly moved.
+        The irreducible error has two parts, and the split between them is
+        :attr:`RealismConfig.confounder_share`: a *structured* part from the unobserved
+        confounders and an i.i.d. measurement-noise part. Both are solved together, which is
+        what lets both knobs be honoured. If the declared confounder coefficients were taken
+        at face value instead, whatever magnitude a domain author happened to write would
+        silently dictate the achievable R², and ``target_r2`` would be a wish rather than a
+        setting — the exact "declared property, not hand-tuned constant" this module is
+        built around.
+
+        Regression solves in closed form. With ``V`` the variance of the observable signal,
+        the achievable R² is ``V / (V + U)`` where ``U`` is the total unexplained variance,
+        so hitting ``target_r2 = r`` needs ``U = V(1−r)/r``. That budget is then split:
+        ``share`` of it to the confounders (which are rescaled to fit), the rest to ``σ²``.
 
         Classification has no closed form, so σ is bisected until the share of rows whose
-        noisy score lands on the far side of its class boundary matches ``1 − accuracy``.
-        That share is the Bayes error of the generated problem, which is the accuracy
-        ceiling a classifier can approach but not exceed.
+        noisy score lands on the far side of its class boundary matches ``1 − accuracy``,
+        with the confounders held at a fixed variance ratio to σ throughout. That share is
+        the Bayes error of the generated problem — the accuracy ceiling a classifier can
+        approach but not exceed.
 
         Args:
             frame: The feature frame the labels will be drawn for.
@@ -767,15 +827,17 @@ class LatentModel(BaseModel):
         np = _numpy()
         signal = self.signal_frame(frame)
         signal_var = float(np.nanvar(signal.to_numpy(dtype="float64")))
-        confounders = self._confounder_values(len(frame), self._rng(seed))
-        confounder_var = float(np.var(confounders)) if self.confounders else 0.0
+        raw_confounders = self._confounder_values(len(frame), self._rng(seed, _STREAM_CONFOUNDER))
+        raw_std = float(np.std(raw_confounders)) if self.confounders else 0.0
         notes: list[str] = []
 
         if self.task == "regression":
-            sigma = self._regression_sigma(signal_var, confounder_var, notes)
+            sigma, scale = self._regression_noise(signal_var, raw_std, notes)
         else:
-            sigma = self._classification_sigma(frame, signal, confounders, notes)
+            sigma, scale = self._classification_noise(frame, signal, raw_confounders, notes)
 
+        confounders = raw_confounders * scale
+        confounder_var = float(np.var(confounders)) if self.confounders else 0.0
         total_unexplained = confounder_var + sigma**2
         ceiling = (
             signal_var / (signal_var + total_unexplained)
@@ -785,6 +847,7 @@ class LatentModel(BaseModel):
         calibration = LatentCalibration(
             noise_sigma=sigma,
             signal_variance=signal_var,
+            confounder_scale=scale,
             confounder_variance=confounder_var,
             implied_r2_ceiling=float(ceiling),
             notes=notes,
@@ -795,43 +858,76 @@ class LatentModel(BaseModel):
             calibration.class_shares = self._shares_from_cuts(noisy, calibration.cut_points)
         return calibration
 
-    def _regression_sigma(
-        self, signal_var: float, confounder_var: float, notes: list[str]
-    ) -> float:
-        """Solve σ for the requested R², or fall back to the declared absolute σ."""
+    def _confounder_scale_for(self, sigma: float, raw_std: float) -> float:
+        """Factor putting the confounders at their declared share of the noise budget.
+
+        Solved from ``var_confounder / (var_confounder + σ²) = share``, which rearranges to
+        ``std_confounder = σ · sqrt(share / (1 − share))``. With no confounders declared, or
+        a share of zero, the factor is zero and the whole budget is i.i.d. noise.
+        """
+        share = self.realism.confounder_share
+        if raw_std <= 0.0 or share <= 0.0 or not self.confounders:
+            return 0.0 if not self.confounders else 1.0
+        if share >= 1.0:
+            return 1.0
+        return sigma * math.sqrt(share / (1.0 - share)) / raw_std
+
+    def _regression_noise(
+        self, signal_var: float, raw_std: float, notes: list[str]
+    ) -> tuple[float, float]:
+        """Solve ``(σ, confounder_scale)`` for the requested R².
+
+        Returns:
+            The noise standard deviation and the factor applied to the confounders.
+        """
         target = self.realism.target_r2
+        share = self.realism.confounder_share
         if target is None:
-            return self.noise_scale
+            notes.append(
+                f"target_r2 is None, so the absolute noise_scale={self.noise_scale} is used "
+                f"as-is and the confounders keep their declared coefficients; the achievable "
+                f"ceiling is whatever those happen to produce"
+            )
+            return self.noise_scale, 1.0
         if signal_var <= 0.0:
             notes.append(
                 "observable signal has zero variance on this frame — every driver is "
                 "constant here, so no noise level can produce a learnable target"
             )
-            return self.noise_scale
+            return self.noise_scale, 1.0
         budget = signal_var * (1.0 - target) / target
-        remaining = budget - confounder_var
-        if remaining <= 0.0:
-            notes.append(
-                f"confounder variance {confounder_var:.4g} already exceeds the noise budget "
-                f"{budget:.4g} for target_r2={target}; σ pinned at 0 and the achievable "
-                f"ceiling is BELOW the request — lower the confounder coefficients or "
-                f"accept the lower ceiling, but do not read the requested value as achieved"
-            )
-            return 0.0
-        return math.sqrt(remaining)
+        sigma = math.sqrt(budget * (1.0 - share))
+        if not self.confounders or raw_std <= 0.0:
+            if share > 0.0:
+                notes.append(
+                    f"confounder_share={share} was requested but no confounder is declared; "
+                    f"the whole irreducible budget is i.i.d. noise, so the R² ceiling is "
+                    f"still {target} but nothing about this data is structurally unobserved"
+                )
+            return math.sqrt(budget), 1.0
+        return sigma, self._confounder_scale_for(sigma, raw_std)
 
-    def _classification_sigma(
+    def _classification_noise(
         self,
         frame: pd.DataFrame,
         signal: pd.Series,
-        confounders: Any,  # noqa: ANN401 - ndarray
+        raw_confounders: Any,  # noqa: ANN401 - ndarray
         notes: list[str],
-    ) -> float:
-        """Bisect σ until the boundary-crossing share matches ``1 − target_accuracy``."""
+    ) -> tuple[float, float]:
+        """Bisect σ until the boundary-crossing share matches ``1 − target_accuracy``.
+
+        Returns:
+            The noise standard deviation and the factor applied to the confounders.
+        """
         np = _numpy()
         target = self.realism.target_accuracy
+        raw_std = float(np.std(raw_confounders)) if self.confounders else 0.0
         if target is None:
-            return self.noise_scale
+            notes.append(
+                f"target_accuracy is None, so the absolute noise_scale={self.noise_scale} "
+                f"is used as-is; the Bayes-error ceiling is whatever it produces"
+            )
+            return self.noise_scale, 1.0
         clean = signal.to_numpy(dtype="float64")
         spread = float(np.nanstd(clean))
         if spread <= 0.0:
@@ -839,23 +935,25 @@ class LatentModel(BaseModel):
                 "observable signal has zero variance on this frame — the class labels "
                 "would be pure noise regardless of σ"
             )
-            return self.noise_scale
+            return self.noise_scale, 1.0
         wanted_error = 1.0 - target
         low, high = 0.0, spread * 8.0
         for _ in range(_SIGMA_SEARCH_ITERATIONS):
             mid = 0.5 * (low + high)
-            if self._crossing_share(frame, signal, confounders, mid) < wanted_error:
+            scaled = raw_confounders * self._confounder_scale_for(mid, raw_std)
+            if self._crossing_share(frame, signal, scaled, mid) < wanted_error:
                 low = mid
             else:
                 high = mid
         sigma = 0.5 * (low + high)
-        achieved = 1.0 - self._crossing_share(frame, signal, confounders, sigma)
+        scale = self._confounder_scale_for(sigma, raw_std)
+        achieved = 1.0 - self._crossing_share(frame, signal, raw_confounders * scale, sigma)
         notes.append(
             f"σ={sigma:.4g} bisected to a Bayes-error ceiling of {achieved:.3f} accuracy "
             f"(requested {target:.3f}); a classifier that scores above this is reading "
             f"something it should not have"
         )
-        return sigma
+        return sigma, scale
 
     def _crossing_share(
         self,
@@ -882,11 +980,9 @@ class LatentModel(BaseModel):
     ) -> pd.Series:
         """``signal + confounders + heteroscedastic ε`` as a Series."""
         pd = _pandas()
-        rng = self._rng(seed)
+        rng = self._rng(seed, _STREAM_NOISE)
         noise = rng.normal(0.0, 1.0, size=len(frame)) * sigma * self._noise_multiplier(frame)
-        return pd.Series(
-            signal.to_numpy(dtype="float64") + confounders + noise, index=frame.index
-        )
+        return pd.Series(signal.to_numpy(dtype="float64") + confounders + noise, index=frame.index)
 
     def _weights_in_level_order(self) -> list[float]:
         """Normalised class weights in :attr:`levels` order, defaulting to uniform."""
@@ -951,15 +1047,16 @@ class LatentModel(BaseModel):
         """
         signal = self.signal_frame(frame)
         resolved = calibration or self.calibrate(frame, seed=seed)
-        confounders = self._confounder_values(len(frame), self._rng(seed))
+        confounders = (
+            self._confounder_values(len(frame), self._rng(seed, _STREAM_CONFOUNDER))
+            * resolved.confounder_scale
+        )
         noisy = self._noisy_score(frame, signal, confounders, resolved.noise_sigma, seed)
         if self.task == "regression":
             return self._clamp_series(noisy).rename(None)
         return self._labels_from_scores(noisy, resolved)
 
-    def _labels_from_scores(
-        self, scores: pd.Series, calibration: LatentCalibration
-    ) -> pd.Series:
+    def _labels_from_scores(self, scores: pd.Series, calibration: LatentCalibration) -> pd.Series:
         """Cut a noisy score into class labels and apply boundary label noise."""
         np = _numpy()
         pd = _pandas()
@@ -1032,11 +1129,9 @@ class LatentModel(BaseModel):
         rules = self.realism.missingness
         if not rules:
             return frame
-        nullable = (
-            {f.name: f.nullable for f in problem.features} if problem is not None else None
-        )
+        nullable = {f.name: f.nullable for f in problem.features} if problem is not None else None
         result = frame.copy()
-        rng = self._rng(seed)
+        rng = self._rng(seed, _STREAM_MISSINGNESS)
         for rule in rules:
             for column in (rule.feature, rule.depends_on):
                 if column not in result.columns:
@@ -1167,7 +1262,9 @@ def default_latent_model(
 
     span = _target_span(problem)
     base = span / (3.0 * math.sqrt(max(len(driving), 1)))
-    drivers = [_driver_for(feature, base, rng) for feature in driving]
+    drivers = [
+        _driver_for(feature, base, rng, position) for position, feature in enumerate(driving)
+    ]
     interactions = _interactions_for(driving, base, rng)
 
     numeric_driving = [f for f in driving if f.dtype == "numeric"]
@@ -1197,9 +1294,12 @@ def default_latent_model(
         drivers=drivers,
         interactions=interactions,
         confounders=[
+            # Unit-scaled on purpose: calibrate() rescales it to occupy exactly
+            # realism.confounder_share of the solved noise budget, so the coefficient here
+            # sets the confounder's *shape* and the config sets its *size*.
             Confounder(
                 name="unrecorded_operating_conditions",
-                coefficient=base * 1.2,
+                coefficient=1.0,
                 distribution="normal",
                 location=0.0,
                 scale=1.0,
@@ -1234,8 +1334,19 @@ def _target_midpoint(problem: MLProblem) -> float:
     return 0.0
 
 
-def _driver_for(feature: Any, base: float, rng: Any) -> LatentDriver:  # noqa: ANN401
-    """Build one driver for a feature, with a deterministic sign and shape."""
+_SHAPE_CYCLE: tuple[TransformName, ...] = ("identity", "identity", "tanh", "identity", "sqrt")
+"""Transforms assigned to numeric drivers by position.
+
+Cycled rather than drawn at random, because "some driver is non-linear" has to be a
+*guarantee* and not a 97%-likely outcome: the whole point of the shape is that a linear
+model visibly underperforms the boosted ensemble, and a seed that happened to pick
+``identity`` five times would quietly remove the only thing the AutoML tiers have to prove.
+Both non-linear entries are monotone, so SHAP attribution still reads as a domain claim.
+"""
+
+
+def _driver_for(feature: Any, base: float, rng: Any, position: int) -> LatentDriver:  # noqa: ANN401
+    """Build one driver for a feature, with a seeded magnitude and a cycled shape."""
     magnitude = base * rng.uniform(0.6, 1.4)
     sign = 1.0 if rng.random() < 0.5 else -1.0
     if feature.dtype == "categorical":
@@ -1247,13 +1358,10 @@ def _driver_for(feature: Any, base: float, rng: Any) -> LatentDriver:  # noqa: A
             feature=feature.name, coefficient=sign * magnitude, level_effects=effects
         )
     center, scale = _bounds_to_center_scale(feature)
-    # Mild, monotone non-linearity on a minority of drivers: enough that a linear model
-    # visibly underperforms the boosted ensemble, not so much that SHAP stops reading.
-    transform: TransformName = rng.choice(["identity", "identity", "tanh", "sqrt"])
     return LatentDriver(
         feature=feature.name,
         coefficient=sign * magnitude,
-        transform=transform,
+        transform=_SHAPE_CYCLE[position % len(_SHAPE_CYCLE)],
         center=center,
         scale=scale,
     )
@@ -1520,9 +1628,7 @@ def _resolved_floor(task: TaskType, floor: float | None) -> float:
     if floor is not None:
         return floor
     return (
-        settings.learnable_r2_floor
-        if task == "regression"
-        else settings.learnable_accuracy_floor
+        settings.learnable_r2_floor if task == "regression" else settings.learnable_accuracy_floor
     )
 
 
@@ -1575,9 +1681,7 @@ def assert_learnable(
             single feature explains it.
         InsufficientLabelsError: When there are too few labelled rows to measure.
     """
-    report = measure_learnability(
-        frame, problem, floor=floor, ceiling=ceiling, seed=seed
-    )
+    report = measure_learnability(frame, problem, floor=floor, ceiling=ceiling, seed=seed)
     if not report.learnable:
         raise LabelNotLearnableError(
             report.metric_name, report.metric_value, report.effective_floor
@@ -1723,16 +1827,47 @@ def realism_report(
         "notes": list(calibration.notes),
     }
     if problem.target.task == "regression" and target in frame.columns:
-        residual = pd.to_numeric(frame[target], errors="coerce") - latent.signal_frame(frame)
-        quartile = latent.signal_frame(frame).rank(pct=True)
+        signal = latent.signal_frame(frame)
+        truth = pd.to_numeric(frame[target], errors="coerce")
+        residual = truth - signal
+        quartile = signal.rank(pct=True)
         low = residual[quartile <= 0.25].std()
         high = residual[quartile >= 0.75].std()
         evidence["noise"]["heteroscedasticity_ratio"] = (
             float(high / low) if low and float(low) > 0.0 else None
         )
+        oracle = _oracle_r2(truth, latent._clamp_series(signal))
+        evidence["noise"]["oracle_r2"] = oracle
         evidence["achieved"]["headroom"] = (
-            float(report.metric_value / calibration.implied_r2_ceiling)
-            if calibration.implied_r2_ceiling > 0.0
-            else None
+            float(report.metric_value / oracle) if oracle and oracle > 0.0 else None
         )
     return evidence
+
+
+def _oracle_r2(truth: pd.Series, signal: pd.Series) -> float | None:
+    """R² of the latent function itself, scored on the frame as it was actually recorded.
+
+    This is the honest ceiling, and it is deliberately *lower* than
+    :attr:`LatentCalibration.implied_r2_ceiling`. That one is analytic — it divides signal
+    variance by signal plus irreducible variance — and so it silently assumes two things
+    that stop being true by the time the frame exists: that no value was clamped to the
+    target's declared bounds, and that every driver was actually recorded. Both are realism
+    features, both destroy recoverable signal, and neither shows up in the algebra.
+
+    Scoring the latent function against the frame's own target, with missing drivers
+    contributing zero exactly as they will for any model, gives the number ``headroom``
+    should be measured against: what a model that *knew the generating function* would score
+    on this data. A probe reaching 90% of that has learned nearly everything there is.
+
+    Args:
+        truth: The recorded target column.
+        signal: The latent function evaluated on the recorded (hole-punched) frame.
+
+    Returns:
+        The oracle R², or ``None`` when it cannot be computed.
+    """
+    metrics = _sklearn("metrics")
+    pair = truth.notna() & signal.notna()
+    if int(pair.sum()) < MIN_LEARNABILITY_ROWS:
+        return None
+    return float(metrics.r2_score(truth[pair], signal[pair]))

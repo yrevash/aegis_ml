@@ -98,6 +98,13 @@ ignore = ["D203", "D213"]
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
+# `app` and `aegis` are first-party in the DESTINATION repo, and the adapter templates use
+# the import order that is correct there — identical to Aegis's own reference adapter.
+# Without this, ruff sorts `pydantic` against `app.*` and reports I001 on files that are 
+# correctly ordered for the tree they will actually live in.
+[tool.ruff.lint.isort]
+known-first-party = ["app", "aegis", "aegis_ml"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

@@ -367,7 +367,9 @@ def _portable_families(task: str) -> list[str]:
     return [f for f in families if is_portable_kind(kind_for(f, task), task=task)]
 
 
-def _member(family: str, task: str, params: dict[str, Any], name: str | None = None) -> RecipeMember:
+def _member(
+    family: str, task: str, params: dict[str, Any], name: str | None = None
+) -> RecipeMember:
     """Build one recipe member, coercing params to what the class actually accepts."""
     kind = kind_for(family, task)
     kept, _dropped = coerce_params(kind, params)
@@ -414,10 +416,11 @@ def _baseline_configs(ctx: _Context) -> list[tuple[str, list[RecipeMember]]]:
 
     configs: list[tuple[str, list[RecipeMember]]] = []
     spine = [f for f in ("xgboost", "hist_gbm") if f in available]
-    if spine:
-        configs.append(
-            ("aegis_spine", [_member(f, task, defaults[f]) for f in spine]),
-        )
+    if len(spine) > 1:
+        # Only when both halves are present: with one member the "spine" configuration is
+        # bit-identical to that family's own row below, and two identical rows on a
+        # leaderboard read as corroboration rather than as the duplicate they are.
+        configs.append(("aegis_spine", [_member(f, task, defaults[f]) for f in spine]))
     for family in available:
         configs.append((family, [_member(family, task, defaults[family])]))
     if len(available) > 2:
@@ -450,7 +453,7 @@ def _linear_reference(ctx: _Context) -> tuple[Any, str]:  # noqa: ANN401
         ("scale", preprocessing.StandardScaler()),
     ]
     if ctx.task == "classification":
-        steps.append(("model", linear.LogisticRegression(max_iter=2000, n_jobs=1)))
+        steps.append(("model", linear.LogisticRegression(max_iter=2000)))
         return pipeline.Pipeline(steps), "logistic_reference"
     steps.append(("model", linear.RidgeCV()))
     return pipeline.Pipeline(steps), "ridge_reference"
@@ -512,9 +515,11 @@ def _search_baseline(ctx: _Context) -> tuple[list[_Scored], dict[str, str]]:
                     portable=False,
                     detail={
                         "role": "reference floor — how much of this target is linear",
-                        "excluded_from_recipes": (
-                            "shap.TreeExplainer, which the Aegis spine explains with, "
-                            "supports tree models only"
+                        "reason_not_portable": (
+                            "a linear model refits fine, but the Aegis spine explains its "
+                            "ensemble with shap.TreeExplainer, which supports tree models "
+                            "only — promoting this would train, score, and then raise "
+                            "inside explain() on the first request that asks why"
                         ),
                     },
                 ),
@@ -920,14 +925,22 @@ def _rank(scored: list[_Scored], higher_is_better: bool) -> list[_Scored]:
 
 
 def _ceiling_note(best: Candidate, chosen: Candidate, metric: str) -> str:
-    """Describe, with both numbers, how much accuracy portability cost."""
+    """Describe, with both numbers and the reason, how much accuracy portability cost.
+
+    The reason comes off the winning candidate rather than being asserted here, because the
+    two ways a candidate can be unpromotable are genuinely different: an AutoGluon stack
+    *cannot be rebuilt* in the serving venv, while the linear reference rebuilds fine and is
+    excluded because the spine cannot explain it. A note that gave both the same
+    explanation would be wrong half the time.
+    """
     gap = best.metric_value - chosen.metric_value
+    reason = str(best.detail.get("reason_not_portable", "it is not a portable recipe"))
     return (
         f"ACCURACY CEILING: {best.name!r} (tier {best.tier}) scored {metric}="
-        f"{best.metric_value:.4f} but cannot be re-fitted in the serving venv, so it was "
-        f"NOT promoted. The promoted recipe {chosen.name!r} (tier {chosen.tier}) scored "
-        f"{metric}={chosen.metric_value:.4f} — a gap of {gap:+.4f} on the held-out split. "
-        f"Report the ceiling as evidence of headroom, never as this model's performance."
+        f"{best.metric_value:.4f} but was NOT promoted — {reason}. The promoted recipe "
+        f"{chosen.name!r} (tier {chosen.tier}) scored {metric}={chosen.metric_value:.4f} — "
+        f"a gap of {gap:+.4f} on the held-out split. Report the ceiling as evidence of "
+        f"headroom, never as this model's performance."
     )
 
 
