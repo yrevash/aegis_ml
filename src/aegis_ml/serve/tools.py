@@ -494,7 +494,9 @@ async def whatif_scenario(
         raise
 
     unit = f" {problem.target.unit}" if problem and problem.target.unit else ""
-    changed = ", ".join(f"{k}: {parsed.features.get(k, '<unset>')} → {v}" for k, v in parsed.changes.items())
+    changed = ", ".join(
+        f"{k}: {parsed.features.get(k, '<unset>')} → {v}" for k, v in parsed.changes.items()
+    )
     numeric = isinstance(base.prediction, int | float) and isinstance(after.prediction, int | float)
     delta = float(after.prediction) - float(base.prediction) if numeric else None
 
@@ -516,7 +518,10 @@ async def whatif_scenario(
                 "this change is not a distinguishable difference."
             )
     else:
-        summary = f"Changing {changed} moves the prediction from {base.prediction} to {after.prediction}."
+        summary = (
+            f"Changing {changed} moves the prediction from {base.prediction} "
+            f"to {after.prediction}."
+        )
     summary += (
         " This is the model's associational response to the altered input, not a causal "
         "effect: it says what the model predicts for a case like this, not what would "
@@ -618,7 +623,9 @@ def _health_snapshot(domain_id: str | None) -> dict[str, Any]:
         ml = require(AEGIS_EXTRA, "aegis.ml")
         model = ml.get_model()
         card = model.model_card()
-        snapshot["served_model"] = card.model_dump(mode="json") if hasattr(card, "model_dump") else str(card)
+        snapshot["served_model"] = (
+            card.model_dump(mode="json") if hasattr(card, "model_dump") else str(card)
+        )
         snapshot["model_available"] = True
     except Exception as exc:  # noqa: BLE001 - every failure mode is reported, not raised
         snapshot["model_available"] = False

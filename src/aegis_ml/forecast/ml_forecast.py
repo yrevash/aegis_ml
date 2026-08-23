@@ -293,7 +293,9 @@ def ml_candidates(
             refit=False,
         )
     except Exception as exc:  # noqa: BLE001 - converted to a typed refusal with the reason
-        raise MLForecastScoringError({"<cross_validation>": f"{type(exc).__name__}: {exc}"}) from exc
+        raise MLForecastScoringError(
+            {"<cross_validation>": f"{type(exc).__name__}: {exc}"}
+        ) from exc
 
     candidates: list[ForecastCandidate] = []
     reasons: dict[str, str] = {}

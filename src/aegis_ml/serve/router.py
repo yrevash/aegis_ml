@@ -33,7 +33,11 @@ from typing import Any
 from aegis_ml._require import require
 from aegis_ml.settings import settings
 
-__all__ = ["FIX_COMMAND", "build_router", "router"]
+__all__ = ["FIX_COMMAND", "build_router"]
+#: ``router`` is also importable (``from aegis_ml.serve.router import router``) but is
+#: deliberately absent from ``__all__`` and from the module namespace until asked for: it is
+#: built on first attribute access by ``__getattr__`` below, so importing this module never
+#: requires FastAPI to be installed.
 
 FASTAPI_EXTRA = "fastapi"
 """Install target for FastAPI; named verbatim in the ImportError if it is missing."""
@@ -248,8 +252,11 @@ def build_router(*, prefix: str = "/ml", tags: list[str] | None = None) -> Any: 
             return responses.HTMLResponse(content=loaded[1])
         return loaded
 
-    @api.get("/leaderboard", summary="The AutoML leaderboard, losers and skipped tiers included")
-    async def leaderboard(run_id: str | None = None, domain_id: str | None = None) -> dict[str, Any]:
+    @api.get("/leaderboard", summary="The AutoML leaderboard, with losers and skipped tiers")
+    async def leaderboard(
+        run_id: str | None = None,
+        domain_id: str | None = None,
+    ) -> dict[str, Any]:
         """Return a run's leaderboard, or the champion's when no run is named.
 
         Args:

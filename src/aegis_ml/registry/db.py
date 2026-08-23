@@ -142,10 +142,9 @@ def tables() -> MLTables:
         Integer,
         String,
         func,
-        mapped_column,
     )
     from sqlalchemy.dialects.postgresql import JSONB
-    from sqlalchemy.orm import DeclarativeBase
+    from sqlalchemy.orm import DeclarativeBase, mapped_column
 
     # ``JsonB`` in aegis.data, reproduced rather than imported so the tables also
     # materialise standalone: native jsonb on PostgreSQL, portable JSON everywhere else

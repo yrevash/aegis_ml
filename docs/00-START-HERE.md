@@ -28,7 +28,7 @@ Nine steps, in this order. Each has a prompt-pack in `prompts/` and a chapter in
 | 0 | Verify the environment | — | `docs/08-windows.md` (Windows) |
 | 1 | Problem statement → **Domain Brief** | `prompts/00-intake.md` | `docs/03-authoring-a-domain.md` |
 | 2 | Fill the ten adapter pieces from the Brief | `prompts/01-schema.md` … `prompts/10-skills.md` | `docs/02-domain-adapter-contract.md`, `docs/03-authoring-a-domain.md` |
-| 3 | Prove the synthetic label is learnable | `prompts/04-generator.md` | `docs/04-synthetic-data.md` |
+| 3 | Prove the synthetic label is learnable | `prompts/03-generator.md` | `docs/04-synthetic-data.md` |
 | 4 | Sync the adapter into Aegis | `prompts/12-integration.md` | `docs/07-integration-with-aegis.md` |
 | 5 | Rewrite `backend/tests/adapter/*` | `prompts/12-integration.md` | `docs/07-integration-with-aegis.md` |
 | 6 | Edit the quarantined vocabulary list | `prompts/12-integration.md` | `docs/07-integration-with-aegis.md` |

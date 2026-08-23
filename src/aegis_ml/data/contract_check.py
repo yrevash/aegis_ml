@@ -217,6 +217,7 @@ def check(
         report.schema_ok = False
         report.schema_error = str(exc)
         report.issues.append("data contract violated (see schema_error)")
+        # audit-ok: recorded as an unchecked-frame warning on the report, not a silent pass.
     except ImportError as exc:
         report.schema_ok = False
         report.schema_error = str(exc)
@@ -231,6 +232,7 @@ def check(
         learnability = measure_learnability(
             frame, problem, floor=floor, ceiling=ceiling, seed=resolved_seed
         )
+    # audit-ok: recorded into learnability_error and surfaced as a blocking issue.
     except (AegisMLError, ImportError) as exc:
         learnability_failure = exc
         report.learnability_error = str(exc)
@@ -287,6 +289,7 @@ def _run_leakage(
 
     try:
         signals = detect_leakage(frame, problem, seed=seed)
+    # audit-ok: recorded as a 'leakage detection did not run' warning on the report.
     except (AegisMLError, ImportError) as exc:
         report.warnings.append(f"leakage detection did not run: {exc}")
         return None

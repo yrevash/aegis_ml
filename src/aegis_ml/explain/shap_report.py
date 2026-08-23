@@ -76,20 +76,121 @@ class ExplainerUnavailableError(AegisMLError):
         )
 
 
-def _predict_function(model: object, problem: MLProblem, template: pd.DataFrame) -> Any:  # noqa: ANN401
-    """Wrap the fitted model so SHAP can call it with plain arrays.
+class _FrameCodec:
+    """Round-trip a domain frame through the numeric matrix SHAP's masker requires.
 
-    SHAP's model-agnostic explainers pass masked rows as a numpy array, but a fitted
-    sklearn ``Pipeline`` over a raw domain frame needs the column names and the original
-    dtypes — a string column arriving as ``object`` and a numeric column arriving as
-    ``object`` are treated very differently by a ``ColumnTransformer``. This wrapper
-    rebuilds the frame with the template's own dtypes on every call, so the model sees
-    exactly the shape it was fitted on.
+    This exists because of a hard constraint, not a preference. ``shap.maskers.Independent``
+    decides which cells a masked row actually changed with ``numpy.isclose``, which is
+    arithmetic — hand it a column of strings and it raises ``unsupported operand type(s) for
+    -: 'str' and 'str'``. So the frame is encoded to floats before it reaches the masker, and
+    decoded back to real levels before it reaches the model.
+
+    The encoding is a per-column codebook, **not** a one-hot expansion, and that is the
+    load-bearing choice: masking a code substitutes another row's level wholesale, exactly as
+    masking a real categorical should. One-hot columns would let the masker produce rows that
+    are two levels at once, or none — combinations the model was never fitted on — and the
+    attributions would then have to be summed back to the original feature under an
+    assumption nobody stated.
+
+    Attributes:
+        columns: Feature columns in declaration order.
+        codebooks: Column → ordered level list, for the columns that are coded.
+    """
+
+    def __init__(self, template: pd.DataFrame, problem: MLProblem) -> None:
+        """Build the codebooks from the template frame and the declared spec.
+
+        Args:
+            template: A frame carrying the columns, dtypes and observed levels.
+            problem: The declared problem; its categorical features are always coded, and so
+                is any column whose data is non-numeric regardless of what the spec says —
+                a mismatch there is a real defect, and crashing inside numpy would report it
+                far from its cause.
+        """
+        import pandas as pd
+
+        self.columns = list(problem.feature_names)
+        self._dtypes = {name: template[name].dtype for name in self.columns}
+        declared = set(problem.categorical_features)
+        self.codebooks: dict[str, list[str]] = {}
+        for name in self.columns:
+            column = template[name]
+            numeric = pd.api.types.is_numeric_dtype(column) and not pd.api.types.is_bool_dtype(
+                column
+            )
+            if name in declared or not numeric:
+                spec = next((f for f in problem.features if f.name == name), None)
+                levels = [str(level) for level in (spec.levels if spec else [])]
+                observed = [str(value) for value in column.dropna().unique()]
+                self.codebooks[name] = list(dict.fromkeys([*levels, *observed]))
+
+    def encode(self, frame: pd.DataFrame) -> Any:  # noqa: ANN401 - ndarray, numpy imported inside
+        """Encode a domain frame to the float matrix the masker can mask.
+
+        Args:
+            frame: A frame carrying every declared feature column.
+
+        Returns:
+            A ``(n_rows, n_features)`` float array. Unknown levels and nulls encode to NaN,
+            so an unseen level stays visibly missing rather than colliding with level 0.
+        """
+        import numpy as np
+
+        out = np.empty((len(frame), len(self.columns)), dtype=float)
+        for index, name in enumerate(self.columns):
+            column = frame[name]
+            if name in self.codebooks:
+                lookup = {level: float(i) for i, level in enumerate(self.codebooks[name])}
+                out[:, index] = [
+                    lookup.get(str(value), float("nan")) if value == value else float("nan")
+                    for value in column.to_numpy()
+                ]
+            else:
+                out[:, index] = column.to_numpy(dtype=float, na_value=float("nan"))
+        return out
+
+    def decode(self, array: Any) -> pd.DataFrame:  # noqa: ANN401 - ndarray from shap
+        """Decode a float matrix back into the frame the fitted model expects.
+
+        Args:
+            array: A ``(n_rows, n_features)`` float array from the masker.
+
+        Returns:
+            A frame whose coded columns carry real level strings again and whose integer and
+            boolean columns get their dtype back when no null crept in — a ``ColumnTransformer``
+            that selects columns by dtype would otherwise route them to the wrong branch.
+        """
+        import numpy as np
+        import pandas as pd
+
+        values = np.asarray(array, dtype=float).reshape(-1, len(self.columns))
+        data: dict[str, Any] = {}
+        for index, name in enumerate(self.columns):
+            column = values[:, index]
+            if name in self.codebooks:
+                levels = self.codebooks[name]
+                data[name] = [
+                    levels[int(code)] if np.isfinite(code) and 0 <= int(code) < len(levels) else None
+                    for code in column
+                ]
+            else:
+                data[name] = column
+        frame = pd.DataFrame(data, columns=self.columns)
+        for name, dtype in self._dtypes.items():
+            if name in self.codebooks:
+                continue
+            if dtype.kind in {"b", "i", "u"} and not frame[name].isna().any():
+                frame[name] = frame[name].round().astype(dtype)
+        return frame
+
+
+def _predict_function(model: object, problem: MLProblem, codec: _FrameCodec) -> Any:  # noqa: ANN401
+    """Wrap the fitted model so SHAP can call it with the encoded matrix.
 
     Args:
         model: The fitted estimator or pipeline.
         problem: The declared problem; decides whether probabilities or values are explained.
-        template: A frame carrying the correct column order and dtypes.
+        codec: The codec that turns the masker's float rows back into a domain frame.
 
     Returns:
         A callable ``(array) -> ndarray`` suitable for ``shap.Explainer``.
@@ -99,10 +200,6 @@ def _predict_function(model: object, problem: MLProblem, template: pd.DataFrame)
             0/1 output has no gradient for SHAP to attribute, and explaining the encoded
             class index would produce numbers whose sign means nothing.
     """
-    import pandas as pd
-
-    columns = list(template.columns)
-    dtypes = template.dtypes.to_dict()
     classification = problem.target.task == "classification"
     if classification and not hasattr(model, "predict_proba"):
         raise ExplainerUnavailableError(
@@ -113,9 +210,8 @@ def _predict_function(model: object, problem: MLProblem, template: pd.DataFrame)
         )
 
     def predict(array: object) -> object:
-        """Rebuild a domain frame from SHAP's array and run the model on it."""
-        frame = array if isinstance(array, pd.DataFrame) else pd.DataFrame(array, columns=columns)
-        frame = frame.astype(dtypes)
+        """Decode SHAP's masked rows into a domain frame and run the model on them."""
+        frame = codec.decode(array)
         if classification:
             return model.predict_proba(frame)  # type: ignore[attr-defined]
         return model.predict(frame)  # type: ignore[attr-defined]
@@ -173,10 +269,13 @@ def _explanation(
     background = features.sample(n=n_background, random_state=seed)
     sample = features.sample(n=n_explain, random_state=seed)
 
-    predict = _predict_function(model, problem, features)
-    masker = shap.maskers.Independent(background, max_samples=n_background)
-    explainer = shap.Explainer(predict, masker, algorithm="permutation")
-    return explainer(sample)
+    codec = _FrameCodec(features, problem)
+    predict = _predict_function(model, problem, codec)
+    masker = shap.maskers.Independent(codec.encode(background), max_samples=n_background)
+    explainer = shap.Explainer(
+        predict, masker, algorithm="permutation", feature_names=list(problem.feature_names)
+    )
+    return explainer(codec.encode(sample))
 
 
 def global_importance(
@@ -325,10 +424,13 @@ def local_explanation(
     sampled = reference.sample(
         n=max(1, min(background_samples, len(reference))), random_state=seed
     )
-    predict = _predict_function(model, problem, reference)
-    masker = shap.maskers.Independent(sampled, max_samples=len(sampled))
-    explainer = shap.Explainer(predict, masker, algorithm="permutation")
-    explanation = explainer(single)
+    codec = _FrameCodec(reference, problem)
+    predict = _predict_function(model, problem, codec)
+    masker = shap.maskers.Independent(codec.encode(sampled), max_samples=len(sampled))
+    explainer = shap.Explainer(
+        predict, masker, algorithm="permutation", feature_names=list(problem.feature_names)
+    )
+    explanation = explainer(codec.encode(single))
 
     values = np.asarray(explanation.values)
     # A 3-D explanation is (rows, features, classes); the last class column is the positive

@@ -78,7 +78,7 @@ class SkipStage(Exception):  # noqa: N818 - control flow, not an error condition
         self.reason = reason
 
 
-def content_key(*parts: Any) -> str:
+def content_key(*parts: Any) -> str:  # noqa: ANN401 - hashing arbitrary JSON-able inputs IS the job
     """Return a stable ``sha256:`` digest over JSON-canonicalised ``parts``.
 
     Args:

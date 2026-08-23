@@ -877,7 +877,9 @@ def data_flow(
             seed=settings.random_seed if seed is None else seed,
             test_size=test_size,
             calibration_size=calibration_size,
-            reference_path=Path(reference_path) if reference_path else run_dir / "reference.parquet",
+            reference_path=(
+                Path(reference_path) if reference_path else run_dir / "reference.parquet"
+            ),
             profile_path=Path(profile_path) if profile_path else None,
         )
     except BaseException as exc:
@@ -1085,7 +1087,11 @@ def train_flow(  # noqa: PLR0915 - one linear pipeline; splitting it would hide 
                 skip_if=lambda c: (
                     None
                     if do_hpo and not c.get("resume_from")
-                    else ("resumed recipe is already tuned" if c.get("resume_from") else "do_hpo=False")
+                    else (
+                        "resumed recipe is already tuned"
+                        if c.get("resume_from")
+                        else "do_hpo=False"
+                    )
                 ),
             ),
             hpo,
@@ -1593,7 +1599,7 @@ def promote_flow(
     populated on a pass as well as on a failure. "Promoted" with no figures is exactly as
     opaque as "rejected" with no figures, and the model card quotes both.
 
-    ``force`` promotes despite a failed gate. It does not fake the decision: the
+    ``force`` promotes despite a failed gate. It does not fabricate the decision: the
     :class:`~aegis_ml.contracts.protocols.GateDecision` still records ``promoted`` as the
     gate computed it, every failed check keeps its reason, and the override is written into
     the reasons list. An operator reading the registry afterwards can see that a human
@@ -1958,7 +1964,10 @@ def forecast_flow(
             record.metric("smape", result.smape)
             record.metric("requested_coverage", result.requested_coverage)
             record.metric("empirical_coverage", result.empirical_coverage)
-            record.note(f"selected {result.model} on measured sMAPE; {result.interval_method_detail}")
+            record.note(
+                f"selected {result.model} on measured sMAPE; "
+                f"{result.interval_method_detail}"
+            )
             if not result.coverage_meets_request:
                 record.note(
                     f"COVERAGE SHORTFALL: asked for {result.requested_coverage:.0%}, the "
@@ -2134,7 +2143,8 @@ def _render_run_summary(
         "| Quantity | Value |",
         "| --- | --- |",
         f"| Task | {result.task} on `{result.target}` |",
-        f"| Primary metric | **{result.metric_name} = {result.metric_value:.4g}** (held-out test split) |",
+        f"| Primary metric | **{result.metric_name} = {result.metric_value:.4g}** "
+        f"(held-out test split) |",
         f"| Requested coverage | {result.requested_coverage:.0%} |",
         f"| Empirical coverage | {coverage} |",
         f"| Coverage gap (requested − achieved) | {gap} |",

@@ -53,7 +53,11 @@ strong = [
     "torch>=2.4",
     "sdv>=1.37",
     "mlforecast>=1.0",
-    "lightgbm>=4.5",
+    # >=4.6, NOT >=4.5: lightgbm 4.5.0 calls sklearn's `check_X_y(..., force_all_finite=)`,
+    # a kwarg sklearn removed in 1.8. Against the sklearn 1.9.0 this project resolves to,
+    # every LightGBM fit raises TypeError — which takes out the whole FLAML tier with it,
+    # since FLAML searches `lgbm` by default. Verified: 4.5.0 fails, 4.7.0 works.
+    "lightgbm>=4.6",
     "catboost>=1.2",
 ]
 

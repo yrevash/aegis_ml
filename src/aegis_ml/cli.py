@@ -1,9 +1,9 @@
 """``aegis-ml`` — the command line, wired to the real functions.
 
 Every command here calls the same code the library exposes; none of them has a private
-path, a demo mode or a shortcut. ``aegis-ml train`` runs :func:`aegis_ml.pipelines.flows.train_flow`
-and nothing else, so a number printed at the terminal and a number in the registry cannot
-disagree.
+path, a demo mode or a shortcut. ``aegis-ml train`` runs
+:func:`aegis_ml.pipelines.flows.train_flow` and nothing else, so a number printed at the
+terminal and a number in the registry cannot disagree.
 
 ``doctor`` is the command this file exists for. It is the first thing run on hackathon
 morning and it answers, in one screen, every question that otherwise costs an hour:
@@ -28,6 +28,11 @@ morning and it answers, in one screen, every question that otherwise costs an ho
 
 It exits non-zero when something essential is broken, so it can gate a Makefile target.
 """
+
+# ruff: noqa: B008 - `typer.Option(...)` in a parameter default is Typer's declaration
+# syntax, not an accidental call-at-import: Typer reads the OptionInfo object off the
+# signature to build the parser. Hoisting them to module-level singletons, which is what
+# B008 asks for, would scatter every command's help text away from the command.
 
 from __future__ import annotations
 
@@ -84,6 +89,11 @@ _DISTRIBUTIONS: dict[str, str] = {
     "mlflow": "mlflow",
     "fastapi": "fastapi",
 }
+
+#: The floor this package is written against. Held as a constant rather than an inline
+#: literal so the check still runs when `aegis-ml` is invoked by an older interpreter that
+#: a `requires-python` metadata bound never got the chance to reject.
+_MIN_PYTHON = (3, 11)
 
 #: Libraries without which nothing in this package can run. Their absence is a non-zero exit.
 _ESSENTIAL = ("pandas", "numpy", "sklearn", "joblib")
@@ -369,7 +379,7 @@ def doctor(
     _echo(f"  python           {sys.version.split()[0]}  ({platform.platform()})")
     _echo(f"  executable       {sys.executable}")
     _echo(f"  aegis_ml         {__version__}")
-    if sys.version_info < (3, 11):
+    if sys.version_info[:2] < _MIN_PYTHON:
         problems.append(f"Python {sys.version_info.major}.{sys.version_info.minor} < 3.11")
 
     if is_available("aegis"):
@@ -410,7 +420,8 @@ def doctor(
     artifact_ok, artifact_detail = _writable(settings.artifact_path.parent)
     _echo(f"  artifact_path    {settings.artifact_path}")
     _echo(f"                   directory {artifact_detail}")
-    _echo(f"                   artifact  {'present' if settings.artifact_path.exists() else 'not yet trained'}")
+    trained = "present" if settings.artifact_path.exists() else "not yet trained"
+    _echo(f"                   artifact  {trained}")
     if not artifact_ok:
         problems.append(f"artifact directory {settings.artifact_path.parent} is not writable")
     registry_ok, registry_detail = _writable(settings.registry_dir)
@@ -427,15 +438,26 @@ def doctor(
     _echo("── orchestration & storage " + "─" * 52)
     from aegis_ml.pipelines.prefect_shim import prefect_active
 
-    _echo(
-        f"  prefect          {'ACTIVE — flows register with the server' if prefect_active() else 'inactive — flows run as plain functions (artifacts are identical)'}"
+    orchestration = (
+        "ACTIVE — flows register with the server"
+        if prefect_active()
+        else "inactive — flows run as plain functions (artifacts are identical)"
     )
-    _echo(f"  mlflow mirror    {'enabled' if settings.enable_mlflow else 'disabled (filesystem registry is the source of truth)'}")
+    mirror = (
+        "enabled"
+        if settings.enable_mlflow
+        else "disabled (filesystem registry is the source of truth)"
+    )
+    _echo(f"  prefect          {orchestration}")
+    _echo(f"  mlflow mirror    {mirror}")
     if settings.postgres_dsn:
         reachable, detail = _postgres_reachable(settings.postgres_dsn)
         _echo(f"  postgres         {'reachable' if reachable else 'UNREACHABLE'} — {detail}")
         if not reachable:
-            _echo("                   (not essential: the filesystem registry is the source of truth)")
+            _echo(
+                "                   (not essential: the filesystem registry is the "
+                "source of truth)"
+            )
     else:
         _echo("  postgres         no DSN configured (AEGIS_ML_POSTGRES_DSN unset)")
 
@@ -447,7 +469,10 @@ def doctor(
     message, inside = _realism_check(selected_domain)
     from aegis_ml.pipelines.flows import REALISM_ACCURACY_BAND, REALISM_R2_BAND
 
-    _echo(f"  bands            regression R² {REALISM_R2_BAND}, classification accuracy {REALISM_ACCURACY_BAND}")
+    _echo(
+        f"  bands            regression R² {REALISM_R2_BAND}, "
+        f"classification accuracy {REALISM_ACCURACY_BAND}"
+    )
     _echo(f"  reference frame  {message}")
     if inside is False:
         _echo(
@@ -472,7 +497,7 @@ def doctor(
 
 @app.command()
 def init(
-    domain_id: str = typer.Option(..., help="Stable machine id; must match the adapter's DOMAIN_ID."),
+    domain_id: str = typer.Option(..., help="Stable machine id; matches the adapter DOMAIN_ID."),
     out: Path = typer.Option(Path("problem.json"), help="Where to write the problem scaffold."),
     target: str = typer.Option("outcome", help="Name of the predicted column."),
     task: str = typer.Option("regression", help="'regression' or 'classification'."),
@@ -599,7 +624,10 @@ def contract(
 
     report = contract_check.check(frame, spec)
     ok = bool(getattr(report, "ok", False))
-    _echo(f"contract      {'PASS' if ok else 'FAIL'}  ({len(frame)} rows, {len(frame.columns)} columns)")
+    _echo(
+        f"contract      {'PASS' if ok else 'FAIL'}  "
+        f"({len(frame)} rows, {len(frame.columns)} columns)"
+    )
     if not ok:
         failures.append("data contract failed")
         for line in str(getattr(report, "errors", report)).splitlines()[:20]:
@@ -749,7 +777,10 @@ def train(
     _echo(f"run_id            {result.run_id}")
     _echo(f"{result.metric_name:<17} {result.metric_value:.4g}  (held-out test split)")
     _echo(f"coverage          requested {result.requested_coverage:.0%} / achieved {coverage}")
-    _echo(f"splits            {result.training_size} train / {result.calibration_size} calib / {result.test_size} test")
+    _echo(
+        f"splits            {result.training_size} train / "
+        f"{result.calibration_size} calib / {result.test_size} test"
+    )
     _echo(f"digest            {result.dataset_digest}")
     _echo(f"artifact          {result.artifact_path}")
     _echo("\nNext: `aegis-ml promote --run-id " + result.run_id + "`")
@@ -794,7 +825,7 @@ def eval_command(
 @app.command()
 def promote(
     run_id: str = typer.Option(..., help="The challenger run."),
-    force: bool = typer.Option(False, help="Promote despite a failed gate, recording the override."),
+    force: bool = typer.Option(False, help="Promote despite a failed gate; records it."),
 ) -> None:
     """Judge a challenger against the champion and replace the served artifact if it wins.
 
@@ -965,7 +996,10 @@ def forecast(
     _echo()
     _echo(f"model             {run['model']}  (selected on measured sMAPE)")
     _echo(f"interval          {run['interval_method']} — {run['interval_method_detail']}")
-    _echo(f"coverage          requested {run['requested_coverage']:.0%} / achieved {run['empirical_coverage']:.1%}")
+    _echo(
+        f"coverage          requested {run['requested_coverage']:.0%} / "
+        f"achieved {run['empirical_coverage']:.1%}"
+    )
     _echo(f"sMAPE / MAE       {run['smape']:.3f}% / {run['mae']:.4g}")
     _echo("candidates:")
     for candidate in payload["backtest"]["candidates"]:
@@ -1036,7 +1070,7 @@ def card(
 def export(
     run_id: str = typer.Option(..., help="The registered run to export."),
     out: Path = typer.Option(None, help="Destination .onnx file; defaults inside the run dir."),
-    validate: bool = typer.Option(True, help="Validate the round-trip against the reference frame."),
+    validate: bool = typer.Option(True, help="Validate the round-trip on the reference frame."),
 ) -> None:
     """Export a run's fitted model to ONNX and validate the round-trip.
 
@@ -1129,7 +1163,10 @@ def registry(
         _echo(f"no runs in {settings.registry_dir}")
         return
 
-    _echo(f"{'run_id':<28} {'stage':<11} {'metric':<10} {'value':>9} {'req':>5} {'emp':>7}  created")
+    _echo(
+        f"{'run_id':<28} {'stage':<11} {'metric':<10} "
+        f"{'value':>9} {'req':>5} {'emp':>7}  created"
+    )
     _echo("-" * 100)
     for entry in entries:
         result = entry.result
