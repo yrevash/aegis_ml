@@ -601,7 +601,11 @@ def _draw_shipment(
 
     # Coverage guarantee: the first pass round-robins every product class so no class is
     # ever missing even for a small N; the remainder is weighted for realistic imbalance.
-    product = products[index] if index < len(products) else _weighted(rng, products, _PRODUCT_WEIGHTS)
+    product = (
+        products[index]
+        if index < len(products)
+        else _weighted(rng, products, _PRODUCT_WEIGHTS)
+    )
     tier = _weighted(rng, tiers, _CARRIER_TIER_WEIGHTS)
     of_tier = [c for c in carriers if c.tier is tier]
     carrier = rng.choice(of_tier or carriers)
@@ -620,7 +624,8 @@ def _draw_shipment(
     packaging = _weighted(rng, packagings, _PACKAGING_BY_PRODUCT[product])
     low_hours, high_hours, low_hops, high_hops = _ROUTE_PROFILE[route]
 
-    transit_hours = round(min(_TRANSIT_MAX, max(_TRANSIT_MIN, rng.uniform(low_hours, high_hours))), 2)
+    drawn_hours = rng.uniform(low_hours, high_hours)
+    transit_hours = round(min(_TRANSIT_MAX, max(_TRANSIT_MIN, drawn_hours)), 2)
     handoff_count = rng.randint(low_hops, high_hops)
     # ``ambient_temp_c`` and ``payload_kg`` are drawn with no reference to origin_region.
     # Real regions do correlate with real temperatures; letting them correlate here would

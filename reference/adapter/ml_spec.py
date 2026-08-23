@@ -78,7 +78,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 from aegis_ml.contracts.spec import FeatureSpec, MLProblem, TargetSpec
-
 from reference.adapter.schema import (
     CarrierTier,
     ExcursionFlag,
@@ -1046,8 +1045,15 @@ def excursion_frame(*, num_records: int = 1400, seed: int = 11) -> pd.DataFrame:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def describe_prediction(resp: Any, *, top_k: int = 3) -> str:
+def describe_prediction(resp: Any, *, top_k: int = 3) -> str:  # noqa: ANN401
     """Render one ML prediction as decision-support text for the agent's reasoning.
+
+    ``resp`` is typed ``Any`` deliberately, and the ANN401 suppression above is not
+    laziness: ``aegis.adapter.MLSpecModule`` declares this parameter ``Any`` for the same
+    reason. The argument is the *host's* ``MLExplainResponse``, and an adapter that
+    imported that type to name it would pull the whole heavy ML package into a module the
+    platform loads at import time. The structural fields this reads —
+    ``prediction``, ``conformal_interval``, ``shap_attribution`` — are the contract.
 
     This is the **domain's** framing of the spine's output. The core injects the returned
     block into the planner and generate prompts, so the agent plans *with* the model

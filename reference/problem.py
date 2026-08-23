@@ -40,7 +40,6 @@ from aegis_ml.data.latent import (
     MissingnessRule,
     RealismConfig,
 )
-
 from reference.adapter import ml_spec
 
 __all__ = [

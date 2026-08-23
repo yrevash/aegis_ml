@@ -76,9 +76,9 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Protocol
 
-from aegis_ml.serve.tools import ML_TOOL_NAMES, ml_tool_specs
 from pydantic import BaseModel, Field
 
+from aegis_ml.serve.tools import ML_TOOL_NAMES, ml_tool_specs
 from reference.adapter.ml_spec import PROBLEM
 from reference.adapter.schema import (
     PackagingType,
@@ -518,9 +518,12 @@ def _matches(shipment: Shipment, parsed: FindShipmentsArgs) -> bool:
         return False
     if parsed.excursions_only and shipment.excursion_flag is None:
         return False
-    if parsed.excursions_only and shipment.excursion_flag is not None:
-        if shipment.excursion_flag.value != "excursion":
-            return False
+    if (
+        parsed.excursions_only
+        and shipment.excursion_flag is not None
+        and shipment.excursion_flag.value != "excursion"
+    ):
+        return False
     if parsed.text:
         # The **id** is in the haystack deliberately. A planner holding an id from an
         # earlier turn types it into the only free-text field the tool has; when that
@@ -683,7 +686,11 @@ async def add_shipment_note(args: dict[str, Any], ctx: ToolContext) -> ToolActio
     if parsed.retract:
         changed = present
         notes = [note for note in shipment.notes if note.id != note_id]
-        summary = "Note retracted from the shipment timeline." if changed else "Note already absent."
+        summary = (
+            "Note retracted from the shipment timeline."
+            if changed
+            else "Note already absent."
+        )
     else:
         changed = not present
         notes = list(shipment.notes)

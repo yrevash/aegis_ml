@@ -56,7 +56,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from aegis_ml.serve.tools import ML_TOOL_NAMES
-
 from reference.adapter.tools import TOOL_REGISTRY
 
 __all__ = [
