@@ -57,3 +57,47 @@ this table has no conflicts in it: the conflict was designed out rather than res
 uv venv .venv-ml --python 3.11
 uv pip install --python .venv-ml -e '.[strong,serve]'
 ```
+
+---
+
+## A three-way constraint worth knowing about: lightgbm ↔ nannyml ↔ scikit-learn
+
+Found by executing the code, not by reading version metadata. Recording it because it is
+non-obvious and it will otherwise be rediscovered on hackathon morning.
+
+**The facts, each verified in this venv:**
+
+1. `scikit-learn` removed the `force_all_finite=` keyword from `check_X_y` in 1.8. This
+   project resolves to sklearn **1.9.0**.
+2. `lightgbm` 4.5.0's *scikit-learn wrapper* (`LGBMRegressor` / `LGBMClassifier`) still
+   passes that keyword, so every fit through the wrapper raises
+   `TypeError: check_X_y() got an unexpected keyword argument 'force_all_finite'`.
+   Fixed in lightgbm 4.6.
+3. `nannyml>=0.13.0` requires `lightgbm>=3.3,<4.6` — so we **cannot** simply raise the floor
+   without dropping NannyML, and NannyML is the one tool in the stack that estimates live
+   performance *without ground-truth labels*.
+
+**What is actually broken, and what is not.** The wrapper is the only casualty. Both
+NannyML and FLAML drive LightGBM through its **native** `Dataset`/`train` API, which never
+touches `check_X_y`:
+
+| Path | Status | Evidence |
+|---|---|---|
+| `nannyml.DLE` fit + estimate | works | `estimated_rmse = 2.07 [1.71, 2.44]` on unlabelled current data |
+| FLAML with `lgbm` in the estimator list | works | best estimator `lgbm`, r² 0.9310 |
+| FLAML without `lgbm` | works | best estimator `xgboost`, r² 0.8711 |
+| Direct `LGBMRegressor(...).fit(...)` | **raises** | `TypeError` as above |
+
+**Resolution: change nothing, and let the recipe layer report it.** `lightgbm` stays where
+NannyML pins it. FLAML keeps `lgbm` in its search list because FLAML's own path is fine. The
+only affected code is our own direct-wrapper candidate, and `automl.recipe.is_portable_kind`
+already handles exactly this case the right way — the member is dropped from the recipe with
+its reason recorded in `Leaderboard.tiers_skipped`, rather than the tier silently vanishing.
+
+That is the design working as intended: an unavailable estimator and an estimator that lost
+on merit must never look the same on the leaderboard.
+
+**If you want the wrapper back**, the trade is explicit: drop NannyML (losing label-free
+performance estimation) and pin `lightgbm>=4.6`. Do not take that trade for a hackathon —
+XGBoost and HistGradientBoosting cover the same ground, and label-free monitoring is the
+more interesting thing to demo.
