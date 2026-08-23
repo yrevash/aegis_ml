@@ -1127,18 +1127,19 @@ def registry(
         _echo(f"no runs in {settings.registry_dir}")
         return
 
+    width = max(6, *(len(entry.run_id) for entry in entries))
     _echo(
-        f"{'run_id':<28} {'stage':<11} {'metric':<10} "
+        f"{'run_id':<{width}} {'stage':<11} {'metric':<10} "
         f"{'value':>9} {'req':>5} {'emp':>7}  created"
     )
-    _echo("-" * 100)
+    _echo("-" * (width + 52))
     for entry in entries:
         result = entry.result
         empirical = (
             f"{result.empirical_coverage:.1%}" if result.empirical_coverage is not None else "  n/a"
         )
         _echo(
-            f"{entry.run_id:<28} {entry.stage:<11} {result.metric_name:<10} "
+            f"{entry.run_id:<{width}} {entry.stage:<11} {result.metric_name:<10} "
             f"{result.metric_value:>9.4g} {result.requested_coverage:>5.0%} {empirical:>7}  "
             f"{entry.created_at}"
         )

@@ -1299,6 +1299,7 @@ def train_flow(  # noqa: PLR0915 - one linear pipeline; splitting it would hide 
                 target_unit=problem.target.unit,
                 target_description=problem.target.description,
                 data_source=bundle.provenance,
+                created_at=datetime.now(UTC).isoformat(),
                 tabpfn_used=bool(
                     ctx.get("recipe") is not None and ctx["recipe"].tier == "tabpfn"
                 ),
@@ -1427,8 +1428,10 @@ def eval_flow(
     Args:
         run_id: The registered run to re-score.
         frame: Fresh labelled data. ``None`` re-scores on the run's own frozen reference
-            frame, which is a useful integrity check (it should reproduce) and is recorded
-            as such so it is never mistaken for fresh evidence.
+            frame — an integrity check that the artifact loads and predicts, and nothing
+            more. That frame is the **whole** dataset, including the rows the model was
+            fitted on, so the number it produces is expected to be *better* than the
+            registered one and is recorded as in-sample rather than presented as evidence.
         source: A path or callable to load the frame from, when ``frame`` is ``None``.
         manifest: An open manifest to append to.
         quiet: Suppress the console summary table.
@@ -1481,7 +1484,10 @@ def eval_flow(
         )
         problem: MLProblem = ctx["problem"]
 
+        in_sample = False
+
         def ingest(record: StageRecord) -> Any:  # noqa: ANN401
+            nonlocal in_sample
             if frame is not None:
                 record.note("re-scoring on caller-supplied fresh data")
                 fresh = frame
@@ -1493,9 +1499,13 @@ def eval_flow(
                 if not reference or not Path(reference).exists():
                     raise FrameSourceMissingError(problem.domain_id)
                 record.note(
-                    "re-scoring on the run's OWN frozen reference frame — an integrity "
-                    "check that should reproduce the registered number, not fresh evidence"
+                    "IN-SAMPLE: re-scoring on the run's own frozen reference frame, which "
+                    "contains the rows the model was fitted on. This checks that the "
+                    "artifact loads and predicts; the score it produces is optimistic by "
+                    "construction and is not evidence about unseen data. Pass a fresh "
+                    "labelled frame for that."
                 )
+                in_sample = True
                 fresh = _pd().read_parquet(reference)
             record.rows_out = int(len(fresh))
             return fresh
@@ -1522,6 +1532,12 @@ def eval_flow(
             record.note(
                 f"{name}: registered {entry.result.metric_value:.4g} → re-measured "
                 f"{float(value):.4g} (delta {delta:+.4g})"
+                + (
+                    " — IN-SAMPLE, and therefore expected to be higher; this is not a "
+                    "generalisation result"
+                    if in_sample
+                    else ""
+                )
             )
             return {
                 "metric_name": name,
@@ -1575,7 +1591,8 @@ def eval_flow(
                 "slices": list(ctx.get("slices") or []),
                 "notes": [
                     *entry.result.notes,
-                    f"re-scored on {digest} at {datetime.now(UTC).isoformat()}",
+                    f"re-scored on {digest} at {datetime.now(UTC).isoformat()}"
+                    + (" (IN-SAMPLE: the run's own reference frame)" if in_sample else ""),
                     f"delta vs registered: {rescored['delta']:+.4g}",
                     "empirical_coverage is null here on purpose: coverage is a property of "
                     "a calibration split, and a re-score has none. Use drift_flow for the "

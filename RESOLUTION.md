@@ -128,3 +128,44 @@ on merit must never look the same on the leaderboard.
 performance estimation) and pin `lightgbm>=4.6`. Do not take that trade for a hackathon —
 XGBoost and HistGradientBoosting cover the same ground, and label-free monitoring is the
 more interesting thing to demo.
+
+---
+
+## TabPFN needs a one-time, browser-based setup — do it before the day
+
+Found by running `.fit()`, not by installing. `pip install tabpfn` succeeds, the import
+succeeds, and **then** `.fit()` raises:
+
+```
+tabpfn.errors.TabPFNLicenseError: TabPFN requires a one-time license acceptance to
+download model weights for local inference, but no interactive terminal is available.
+```
+
+From TabPFN 8.x, Prior Labs gates the weight download behind a licence acceptance plus an
+API token. The failure lands *inside* the search, after the earlier tiers have already spent
+their budget — the worst possible moment.
+
+`aegis_ml.automl.tiers` now probes for this at capability-report time, so it shows up in
+`aegis-ml doctor` and in `Leaderboard.tiers_skipped` instead of as a traceback:
+
+```
+  baseline    available
+  flaml       available
+  autogluon   available
+  tabpfn      importable, but no model weights are available and TABPFN_TOKEN is unset,
+              so .fit() would raise TabPFNLicenseError mid-search. One-time setup: ...
+```
+
+**The setup, which needs a browser and a network — so not on hackathon morning:**
+
+1. Register at <https://ux.priorlabs.ai>
+2. Accept the licence on the **Licenses** tab
+3. Copy the API key from the **Account** page
+4. `export TABPFN_TOKEN="<key>"` (add it to your shell profile)
+5. Run one fit to pull the weights into `~/Library/Caches/tabpfn` (`%LOCALAPPDATA%\tabpfn`
+   on Windows). After that the tier works offline and the token is no longer needed.
+
+**If you skip it, nothing breaks.** The tier reports itself unavailable with the reason,
+and AutoGluon covers the same ground — measured here at R² 0.5411 across 10 models in 20 s
+on data whose analytic ceiling is 0.65. Licence terms are unchanged: Prior Labs License,
+research and evaluation permitted, commercial and production use not.

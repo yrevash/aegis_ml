@@ -173,7 +173,55 @@ def unavailable_reason(tier: TierName) -> str | None:
             f"`uv pip install '{TIER_EXTRAS[tier]}'`, or run the search through "
             f"aegis_ml.automl.runner, which executes it inside the trainer venv."
         )
+    if tier == "tabpfn":
+        return _tabpfn_weights_reason()
     return None
+
+
+def _tabpfn_weights_reason() -> str | None:
+    """Return why TabPFN cannot fit here despite importing cleanly, or ``None``.
+
+    Importability is not availability for this tier, and the gap is not academic. From
+    TabPFN 8.x the package imports fine with no weights on disk, then raises
+    ``TabPFNLicenseError`` **inside** ``.fit()`` — after the search has already spent its
+    budget on the earlier tiers and a user is watching a progress line. Prior Labs gates
+    the weight download behind a one-time licence acceptance plus an API token.
+
+    Probing at capability-report time turns that into a line in ``tiers_skipped`` and one
+    in ``aegis-ml doctor``, which is the difference between "TabPFN is not set up on this
+    machine" and a traceback mid-demo.
+
+    Two things count as ready, and either is enough:
+
+    * ``TABPFN_TOKEN`` is set, so the weights can be fetched on first use; or
+    * a checkpoint is already in the local cache, so no network is needed at all — which
+      is the state a machine is in after one successful run, and the state a hackathon
+      laptop should be put in deliberately, in advance.
+
+    Returns:
+        A reason string naming the exact remedy, or ``None`` when the tier can fit.
+    """
+    import os
+
+    if os.environ.get("TABPFN_TOKEN"):
+        return None
+    try:
+        from tabpfn.model_loading import get_cache_dir
+
+        cache = get_cache_dir()
+        if cache.exists() and any(cache.rglob("*.ckpt")):
+            return None
+    # audit-ok: the probe's own failure IS a reason string below, never a silent pass.
+    except Exception:  # noqa: BLE001 - any failure here means "cannot confirm weights"
+        pass
+    return (
+        "importable, but no model weights are available and TABPFN_TOKEN is unset, so "
+        ".fit() would raise TabPFNLicenseError mid-search. One-time setup: register at "
+        "https://ux.priorlabs.ai, accept the licence on the Licenses tab, copy the API key "
+        "from the Account page, then `export TABPFN_TOKEN=...` and run once to cache the "
+        "weights locally. Do this BEFORE the day — it needs a browser and a network. "
+        + TABPFN_LICENSE_NOTICE
+    )
 
 
 def available_tiers() -> dict[TierName, bool]:
