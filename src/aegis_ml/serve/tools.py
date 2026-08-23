@@ -48,7 +48,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from aegis_ml._require import require
+from aegis_ml._require import is_available, require
 from aegis_ml.contracts.spec import MLProblem
 
 __all__ = [
@@ -96,18 +96,6 @@ ML_TOOL_NAMES = (
 #: the remedy — training through the *library's* constant writes to a path nothing loads
 #: from, and the endpoints keep answering 503.
 FIX_COMMAND = "python -m app.ml"
-
-#: Entry points accepted from ``aegis_ml.explain.reason_codes``, in preference order. The
-#: module is authored independently against a shared brief; naming every spelling this
-#: module will call — and refusing rather than guessing when none is present — is the
-#: difference between an explicit seam and a silent one.
-_REASON_CODE_ENTRY_POINTS = (
-    "render_reason_codes",
-    "reason_codes",
-    "describe_prediction",
-    "render",
-)
-
 
 # ────────────────────────────────────────────────────────────────── argument models ──
 
@@ -202,37 +190,6 @@ class MLToolResult(BaseModel):
 # ─────────────────────────────────────────────────────────────────────── rendering ──
 
 
-def _call_first(
-    fn: Callable[..., Any],
-    attempts: Sequence[tuple[tuple[Any, ...], dict[str, Any]]],
-) -> Any:  # noqa: ANN401 - the callee's own return type
-    """Call ``fn`` with the first argument arrangement it accepts.
-
-    Only :class:`TypeError` — raised by argument binding *before* the body runs — advances
-    to the next arrangement. Every other exception propagates: a callee that was reached and
-    failed is a real failure, and retrying it with different arguments until something
-    sticks would turn a bug into a coin toss.
-
-    Args:
-        fn: The callable to invoke.
-        attempts: Ordered ``(args, kwargs)`` arrangements.
-
-    Returns:
-        The callee's return value.
-
-    Raises:
-        TypeError: If every arrangement was rejected.
-    """
-    last: TypeError | None = None
-    for args, kwargs in attempts:
-        try:
-            return fn(*args, **kwargs)
-        except TypeError as exc:
-            last = exc
-    assert last is not None  # noqa: S101 - `attempts` is never empty at any call site
-    raise last
-
-
 def _compose_summary(response: Any, problem: MLProblem | None, top_k: int = 3) -> str:  # noqa: ANN401
     """Compose a decision-support sentence from an ``MLExplainResponse``'s own fields.
 
@@ -294,47 +251,39 @@ def _compose_summary(response: Any, problem: MLProblem | None, top_k: int = 3) -
 
 
 def _reason_codes(response: Any, problem: MLProblem | None, top_k: int) -> dict[str, Any]:  # noqa: ANN401
-    """Render reason codes through :mod:`aegis_ml.explain.reason_codes`, or say why not.
+    """Render reason codes through :mod:`aegis_ml.explain.reason_codes`.
 
     Args:
         response: An ``aegis.ml.types.MLExplainResponse``.
-        problem: The supervised problem.
-        top_k: How many codes to request.
+        problem: The supervised problem. Required — the renderer needs the target's unit and
+            the categorical level names to say "three transfers" rather than
+            "route_transfers_3 = 1".
+        top_k: How many codes to render.
 
     Returns:
-        ``{"codes": <rendered>}`` on success, or ``{"unavailable": "<reason>"}``. The second
-        form is deliberate and visible in the tool payload: a missing *rendering* changes no
-        number, but a caller must be able to see that the prose it is reading was composed
-        from the raw response rather than by the reason-code module.
-    """
-    try:
-        from aegis_ml.explain import reason_codes as module
-    except ImportError as exc:
-        return {"unavailable": f"aegis_ml.explain.reason_codes is not importable: {exc}"}
+        ``{"codes": [...], "text": "..."}``, or ``{"unavailable": "<reason>"}`` when no
+        problem was bound into the tool spec.
 
-    for name in _REASON_CODE_ENTRY_POINTS:
-        renderer = getattr(module, name, None)
-        if renderer is None or not callable(renderer):
-            continue
-        rendered = _call_first(
-            renderer,
-            [
-                ((response, problem), {"top_k": top_k}),
-                ((response, problem), {}),
-                ((response,), {"top_k": top_k}),
-                ((response,), {}),
-            ],
-        )
-        if isinstance(rendered, str):
-            return {"codes": [rendered], "entry_point": name}
-        return {"codes": list(rendered), "entry_point": name}
+    The second form is deliberate and visible in the tool payload. It changes no number —
+    the prediction, the interval and the attributions are identical either way — but a
+    caller must be able to see that the prose it is reading was composed from the raw
+    response rather than rendered in the domain's own vocabulary.
+    """
+    if problem is None:
+        return {
+            "unavailable": (
+                "no MLProblem was bound into this tool spec, and reason codes are rendered "
+                "in the target's unit and the domain's own level names. Pass "
+                "problem=<MLProblem> to ml_tool_specs() to get them."
+            )
+        }
+    # Full module path: ``aegis_ml.explain.__init__`` re-exports the function
+    # ``reason_codes``, which shadows the submodule of the same name on the package.
+    from aegis_ml.explain.reason_codes import describe_prediction_text, reason_codes
 
     return {
-        "unavailable": (
-            "aegis_ml.explain.reason_codes exposes none of "
-            f"{_REASON_CODE_ENTRY_POINTS}; the summary below was composed from the "
-            "response's own measured fields instead."
-        )
+        "codes": reason_codes(response, problem, top_k=top_k),
+        "text": describe_prediction_text(response, problem, top_k=top_k),
     }
 
 
@@ -455,8 +404,8 @@ async def explain_prediction(
     payload["shap_attribution"] = payload.get("shap_attribution", [])[: parsed.top_k]
     payload["reason_codes"] = codes
     summary = _compose_summary(response, problem, top_k=parsed.top_k)
-    if isinstance(codes.get("codes"), list) and codes["codes"]:
-        summary = " ".join(str(code) for code in codes["codes"])
+    if isinstance(codes.get("text"), str) and codes["text"].strip():
+        summary = codes["text"]
     return MLToolResult(ok=True, summary=summary, data=payload)
 
 
@@ -837,12 +786,9 @@ def _risk_low(explicit: Any = None) -> Any:  # noqa: ANN401 - the host's own ris
     """
     if explicit is not None:
         return explicit
-    try:
-        from aegis_ml._require import require as _require
-
-        return _require(AEGIS_EXTRA, "aegis.core.types").RiskLevel.LOW
-    except ImportError:
+    if not is_available("aegis.core.types"):
         return ML_TOOL_RISK
+    return require(AEGIS_EXTRA, "aegis.core.types").RiskLevel.LOW
 
 
 def ml_tool_specs(

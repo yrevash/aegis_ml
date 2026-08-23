@@ -170,7 +170,9 @@ class _FrameCodec:
             if name in self.codebooks:
                 levels = self.codebooks[name]
                 data[name] = [
-                    levels[int(code)] if np.isfinite(code) and 0 <= int(code) < len(levels) else None
+                    levels[int(code)]
+                    if np.isfinite(code) and 0 <= int(code) < len(levels)
+                    else None
                     for code in column
                 ]
             else:
@@ -227,14 +229,18 @@ def _explanation(
     max_samples: int,
     background_samples: int,
     seed: int | None,
+    n_permutations: int = 4,
+    progress: bool = False,
 ) -> Any:  # noqa: ANN401 - a shap.Explanation, typed only when shap is installed
     """Compute a SHAP ``Explanation`` for a sample of rows.
 
-    Cost is the reason both sample sizes are parameters: the permutation explainer evaluates
-    the model roughly ``2 * n_features + 1`` times per explained row, against every
-    background row. Explaining 500 rows against 50 background rows on a 10-feature problem is
-    around half a million model evaluations — seconds for a gradient-boosted tree, minutes if
-    the numbers are raised carelessly. The defaults are chosen to be honest and finishable.
+    Cost is the reason every size here is a parameter. One permutation round costs
+    ``2 * n_features + 1`` model evaluations per explained row, each expanded across the whole
+    background — so the total is ``rows × rounds × (2f+1) × background`` model rows.
+    shap's own default of ``max_evals=500`` silently buys ~45 rounds on a five-feature
+    problem, which is roughly an order of magnitude more precision than a report needs and
+    turns a 500-row explanation into several minutes. ``n_permutations`` makes that trade
+    explicit instead of expensive by default.
 
     Args:
         model: The fitted estimator or pipeline.
@@ -245,6 +251,12 @@ def _explanation(
             what "absent" means to SHAP — attributions are stated *relative to* it, so it
             must come from the same population as the explained rows.
         seed: Sampling seed, so a re-run of the demo produces the same figures.
+        n_permutations: Permutation rounds per row. More rounds reduce the Monte-Carlo noise
+            on each attribution at a proportional cost; the ranking is stable well before the
+            individual values stop moving.
+        progress: Show shap's progress bar. Off by default because these reports are written
+            from inside a pipeline whose logs are read afterwards, where a redrawn bar is
+            thousands of lines of noise around the one line that matters.
 
     Returns:
         The ``shap.Explanation``.
@@ -275,7 +287,12 @@ def _explanation(
     explainer = shap.Explainer(
         predict, masker, algorithm="permutation", feature_names=list(problem.feature_names)
     )
-    return explainer(codec.encode(sample))
+    per_round = 2 * len(problem.feature_names) + 1
+    return explainer(
+        codec.encode(sample),
+        max_evals=max(per_round, n_permutations * per_round),
+        silent=not progress,
+    )
 
 
 def global_importance(
@@ -286,6 +303,8 @@ def global_importance(
     max_samples: int = 500,
     background_samples: int = 50,
     seed: int | None = None,
+    n_permutations: int = 4,
+    progress: bool = False,
 ) -> list[dict[str, Any]]:
     """Mean absolute SHAP value per declared feature, strongest first — all of them.
 
@@ -308,6 +327,8 @@ def global_importance(
         max_samples: How many rows to explain. See :func:`_explanation` for the cost.
         background_samples: Rows forming SHAP's masking distribution.
         seed: Sampling seed for reproducibility.
+        n_permutations: Permutation rounds per row; the accuracy/cost dial.
+        progress: Show shap's progress bar (off by default — see :func:`_explanation`).
 
     Returns:
         One dict per feature: ``feature``, ``mean_abs_shap``, ``mean_shap``, ``share``
@@ -327,6 +348,8 @@ def global_importance(
         max_samples=max_samples,
         background_samples=background_samples,
         seed=seed,
+        n_permutations=n_permutations,
+        progress=progress,
     )
     values = np.asarray(explanation.values)
     # Multiclass explanations carry a trailing class axis: average the magnitude over
@@ -363,6 +386,7 @@ def local_explanation(
     background: pd.DataFrame | None = None,
     background_samples: int = 50,
     seed: int | None = None,
+    n_permutations: int = 8,
 ) -> list[dict[str, Any]]:
     """Explain one prediction, in the field shape Aegis's ``ShapFeature`` uses.
 
@@ -381,6 +405,9 @@ def local_explanation(
             different population changes every number. Pass the training frame.
         background_samples: How many background rows to sample.
         seed: Sampling seed.
+        n_permutations: Permutation rounds. Higher than the global default because this is a
+            single row: the whole cost is one row's worth, and the number is quoted verbatim
+            in a sentence a human acts on, so its Monte-Carlo noise is worth paying to remove.
 
     Returns:
         One dict per feature with ``feature``, ``value``, ``value_label`` and
@@ -430,7 +457,12 @@ def local_explanation(
     explainer = shap.Explainer(
         predict, masker, algorithm="permutation", feature_names=list(problem.feature_names)
     )
-    explanation = explainer(codec.encode(single))
+    per_round = 2 * len(problem.feature_names) + 1
+    explanation = explainer(
+        codec.encode(single),
+        max_evals=max(per_round, n_permutations * per_round),
+        silent=True,
+    )
 
     values = np.asarray(explanation.values)
     # A 3-D explanation is (rows, features, classes); the last class column is the positive

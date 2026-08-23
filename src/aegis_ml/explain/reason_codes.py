@@ -133,7 +133,7 @@ def reason_codes(
     "pushed the estimate up by 3.2 hours". For a classification target the contributions live
     in the model's output space (probability or log-odds depending on the estimator), so they
     are rendered as unitless weights and the sentence says "pushed the prediction toward"
-    rather than attaching a fake quantity to them.
+    rather than attaching a unit that does not apply to them.
 
     Args:
         resp_like: A response carrying ``shap_attribution`` — an

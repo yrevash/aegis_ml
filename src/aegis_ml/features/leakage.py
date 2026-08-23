@@ -43,7 +43,13 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
     from aegis_ml.contracts.spec import FeatureSpec, MLProblem
 
-__all__ = ["LeakKind", "LeakSignal", "assert_no_leakage", "detect_leakage"]
+__all__ = [
+    "MIN_LEAKAGE_ROWS",
+    "LeakKind",
+    "LeakSignal",
+    "assert_no_leakage",
+    "detect_leakage",
+]
 
 logger = logging.getLogger(__name__)
 

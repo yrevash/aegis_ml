@@ -492,15 +492,26 @@ class MissingnessRule(BaseModel):
 class RealismConfig(BaseModel):
     """The knobs that keep a generated target hard enough to be worth predicting.
 
-    Defaults are chosen to land inside the target band (R² 0.45–0.80, accuracy 0.65–0.88)
-    rather than at the top of it: a demo whose headline number is 0.62 with a stated
-    irreducible ceiling of 0.70 is more credible than one reporting 0.99, and it leaves the
-    conformal interval a real job to do.
+    Defaults are chosen so the **achieved** held-out score lands inside the target band
+    (R² 0.45–0.80, accuracy 0.65–0.88) rather than at the top of it: a demo whose headline
+    number is 0.58 with a stated irreducible ceiling of 0.72 is more credible than one
+    reporting 0.99, and it leaves the conformal interval a real job to do.
+
+    ``target_r2`` and ``target_accuracy`` are **ceilings, not predictions**, and the defaults
+    sit above the band for that reason. A fitted model lands below its ceiling by three
+    separate margins: estimation error on a few thousand rows, the signal that clamping to
+    the target's declared bounds removes, and the drivers that
+    :class:`MissingnessRule` deleted from the record. Measured across the reference
+    problems, that gap runs 0.12–0.19 of R². :func:`realism_report` reports both the
+    analytic ceiling and the measured ``oracle_r2``, so the distinction never has to be
+    inferred from a single number.
 
     Attributes:
-        target_r2: Requested achievable R² for a regression target. The noise σ is solved
-            from the signal's own variance to land here, so realism is declared rather than
-            hand-tuned. ``None`` means "use ``LatentModel.noise_scale`` as an absolute σ".
+        target_r2: Requested achievable R² for a regression target — the ceiling a perfect
+            model would approach, not the score a fitted one will report. The noise σ is
+            solved from the signal's own variance to land here, so realism is declared
+            rather than hand-tuned. ``None`` means "use ``LatentModel.noise_scale`` as an
+            absolute σ".
         target_accuracy: The classification analogue, hit by bisecting on σ until the share
             of rows whose noisy score crosses its class boundary matches ``1 − accuracy``.
         confounder_share: How much of the irreducible error is *structured but unobserved*
@@ -525,8 +536,8 @@ class RealismConfig(BaseModel):
             with no driver at all.
     """
 
-    target_r2: float | None = Field(default=0.62, gt=0.0, lt=1.0)
-    target_accuracy: float | None = Field(default=0.78, gt=0.0, lt=1.0)
+    target_r2: float | None = Field(default=0.72, gt=0.0, lt=1.0)
+    target_accuracy: float | None = Field(default=0.82, gt=0.0, lt=1.0)
     confounder_share: float = Field(default=0.4, ge=0.0, lt=1.0)
     heteroscedastic_feature: str | None = Field(default=None)
     heteroscedastic_strength: float = Field(default=0.6, ge=0.0, le=4.0)
@@ -1829,12 +1840,8 @@ def realism_report(
     if problem.target.task == "regression" and target in frame.columns:
         signal = latent.signal_frame(frame)
         truth = pd.to_numeric(frame[target], errors="coerce")
-        residual = truth - signal
-        quartile = signal.rank(pct=True)
-        low = residual[quartile <= 0.25].std()
-        high = residual[quartile >= 0.75].std()
-        evidence["noise"]["heteroscedasticity_ratio"] = (
-            float(high / low) if low and float(low) > 0.0 else None
+        evidence["noise"]["heteroscedasticity_ratio"] = _heteroscedasticity_ratio(
+            frame, truth - signal, latent.realism.heteroscedastic_feature
         )
         oracle = _oracle_r2(truth, latent._clamp_series(signal))
         evidence["noise"]["oracle_r2"] = oracle
@@ -1842,6 +1849,44 @@ def realism_report(
             float(report.metric_value / oracle) if oracle and oracle > 0.0 else None
         )
     return evidence
+
+
+def _heteroscedasticity_ratio(
+    frame: pd.DataFrame, residual: pd.Series, feature: str | None
+) -> float | None:
+    """Residual spread in the top quartile of the noise-driving feature over the bottom.
+
+    Measured across quartiles of the *feature the knob names*, not of the latent signal.
+    Those are different orderings whenever the noise driver is also a driver of the target —
+    the usual case — and ranking by the signal averages the effect away, reporting ≈1.0 for
+    data that is in fact strongly heteroscedastic. A number that says "no effect" about a
+    working mechanism is worse than no number, because it invites someone to go and fix
+    something that is not broken.
+
+    A ratio near 1.0 means homoscedastic noise; near 2.5 means the residuals in the top
+    quartile are two and a half times as wide, which is the honest reason an adaptive
+    conformal interval should be wider there.
+
+    Args:
+        frame: The labelled frame.
+        residual: Target minus latent signal, aligned to ``frame``.
+        feature: The column :attr:`RealismConfig.heteroscedastic_feature` names.
+
+    Returns:
+        The ratio, or ``None`` when no feature drives the noise or the spread is degenerate.
+    """
+    pd = _pandas()
+    if feature is None or feature not in frame.columns:
+        return None
+    driver = pd.to_numeric(frame[feature], errors="coerce")
+    if driver.nunique(dropna=True) < 4:
+        return None
+    ranks = driver.rank(pct=True)
+    low = residual[ranks <= 0.25].std()
+    high = residual[ranks >= 0.75].std()
+    if low is None or float(low) <= 0.0 or high != high:
+        return None
+    return float(high / low)
 
 
 def _oracle_r2(truth: pd.Series, signal: pd.Series) -> float | None:

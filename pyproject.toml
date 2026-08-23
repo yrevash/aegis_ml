@@ -52,12 +52,18 @@ strong = [
     "tabpfn-extensions>=0.1",
     "torch>=2.4",
     "sdv>=1.37",
-    "mlforecast>=1.0",
-    # >=4.6, NOT >=4.5: lightgbm 4.5.0 calls sklearn's `check_X_y(..., force_all_finite=)`,
-    # a kwarg sklearn removed in 1.8. Against the sklearn 1.9.0 this project resolves to,
-    # every LightGBM fit raises TypeError — which takes out the whole FLAML tier with it,
-    # since FLAML searches `lgbm` by default. Verified: 4.5.0 fails, 4.7.0 works.
-    "lightgbm>=4.6",
+    # Capped <0.15 because autogluon.timeseries pins it there, and AutoGluon is the more
+    # valuable half of this tier. An unbounded `mlforecast>=1.0` makes the whole `strong`
+    # extra unresolvable — found by trying to install it, not by reading metadata.
+    "mlforecast>=0.13,<0.15",
+    # Deliberately UNPINNED at the top end. `nannyml` requires lightgbm<4.6, and lightgbm
+    # <4.6's *sklearn wrapper* is broken against sklearn>=1.8 (`check_X_y(force_all_finite=)`,
+    # removed in 1.8). Raising the floor here makes `.[strong,serve]` — which is exactly what
+    # the trainer venv installs — unresolvable. See RESOLUTION.md: FLAML, AutoGluon and
+    # NannyML all drive LightGBM through its native API and are unaffected; only a direct
+    # `LGBMRegressor(...).fit(...)` breaks, and `automl.recipe.is_portable_kind` already
+    # drops that member with its reason recorded rather than losing the tier.
+    "lightgbm>=4.0",
     "catboost>=1.2",
 ]
 

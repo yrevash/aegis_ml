@@ -164,43 +164,6 @@ def _np() -> Any:  # noqa: ANN401 - the numpy module
     return require(SERVE_EXTRA, "numpy")
 
 
-def _call_first(
-    fn: Callable[..., Any],
-    attempts: Sequence[tuple[tuple[Any, ...], dict[str, Any]]],
-) -> Any:  # noqa: ANN401 - the callee's own return type
-    """Call ``fn`` with the first argument arrangement it accepts.
-
-    This package is assembled from modules authored independently against one brief. Where
-    the brief pinned a function's *leading* parameters but not its full signature (the SHAP
-    HTML renderer, the data profiler, the realism report), the call is attempted in the
-    documented order and only a :class:`TypeError` — which is what an arity or keyword
-    mismatch raises *before* the body runs — advances to the next arrangement.
-
-    Any other exception propagates untouched. That distinction is the whole safety of this
-    helper: a callee that was reached and failed is a real failure and must not be retried
-    with different arguments until something happens to work.
-
-    Args:
-        fn: The callable to invoke.
-        attempts: Ordered ``(args, kwargs)`` arrangements to try.
-
-    Returns:
-        The callee's return value.
-
-    Raises:
-        TypeError: If every arrangement was rejected — the last rejection, so the message
-            names a real signature mismatch.
-    """
-    last: TypeError | None = None
-    for args, kwargs in attempts:
-        try:
-            return fn(*args, **kwargs)
-        except TypeError as exc:
-            last = exc
-    assert last is not None  # noqa: S101 - `attempts` is never empty at any call site
-    raise last
-
-
 def frame_digest(frame: Any, columns: Sequence[str] | None = None) -> str:  # noqa: ANN401
     """Return a stable ``sha256:`` fingerprint of a dataframe's contents.
 
@@ -444,11 +407,19 @@ def _run_data_stages(
     def contract(record: StageRecord) -> Any:  # noqa: ANN401
         from aegis_ml.data import contract_check
 
-        report = contract_check.check(ctx["frame"], problem)
+        # include_leakage=False: the leakage scan is its own stage below, so it is timed,
+        # recorded and re-runnable on its own rather than folded into this one's verdict.
+        report = contract_check.check(ctx["frame"], problem, include_leakage=False, seed=seed)
         record.rows_in = int(len(ctx["frame"]))
-        ok = bool(getattr(report, "ok", False))
-        record.metric("contract_ok", 1.0 if ok else 0.0)
-        if not ok:
+        record.metric("contract_ok", 1.0 if report.ok else 0.0)
+        record.metric("schema_ok", 1.0 if report.schema_ok else 0.0)
+        if report.metric_value is not None:
+            record.metric(report.metric_name or "learnability", float(report.metric_value))
+        for issue in report.issues:
+            record.note(f"issue: {issue}")
+        for warning in report.warnings:
+            record.note(f"warning: {warning}")
+        if not report.ok:
             record.note(
                 "CONTRACT FAILED — training continues for diagnosis, but the promotion "
                 "gate takes contract_ok as an input and will refuse this run."
@@ -466,19 +437,19 @@ def _run_data_stages(
     )
 
     def profile(record: StageRecord) -> Any:  # noqa: ANN401
-        from importlib import import_module
+        # Imported from the full module path: ``aegis_ml.data.__init__`` re-exports the
+        # function ``profile``, which shadows the submodule of the same name on the package.
+        from aegis_ml.data.profile import profile as profile_frame
 
-        module = import_module("aegis_ml.data.profile")
         target = profile_path or (settings.reports_dir / f"{problem.domain_id}_profile.html")
         Path(target).parent.mkdir(parents=True, exist_ok=True)
-        _call_first(
-            module.profile_frame,
-            [
-                ((ctx["frame"], problem), {"html_out": target}),
-                ((ctx["frame"], problem), {"path": target}),
-                ((ctx["frame"], problem, target), {}),
-            ],
+        summary = profile_frame(
+            ctx["frame"], out_html=target, title=f"{problem.domain_id} training frame"
         )
+        record.rows_in = int(len(ctx["frame"]))
+        for key in ("n_rows", "n_columns"):
+            if isinstance(summary.get(key), int | float):
+                record.metric(key, float(summary[key]))
         record.artifact("profile", target)
         return str(target)
 
@@ -496,7 +467,7 @@ def _run_data_stages(
     def learnability(record: StageRecord) -> float:
         from aegis_ml.data import latent as latent_mod
 
-        score = float(latent_mod.assert_learnable(ctx["frame"], problem))
+        score = float(latent_mod.assert_learnable(ctx["frame"], problem, seed=seed))
         floor, ceiling = realism_band_for(problem)
         record.metric("held_out_score", score)
         record.metric("realism_floor", floor)
@@ -523,15 +494,7 @@ def _run_data_stages(
     def realism(record: StageRecord) -> dict[str, Any]:
         from aegis_ml.data import latent as latent_mod
 
-        report = _call_first(
-            latent_mod.realism_report,
-            [
-                ((ctx["frame"], problem, latent), {}),
-                ((ctx["frame"], problem), {"latent": latent}),
-                ((ctx["frame"], problem), {}),
-            ],
-        )
-        data = dict(report)
+        data = dict(latent_mod.realism_report(ctx["frame"], problem, latent, seed=seed))
         for key, value in data.items():
             if isinstance(value, int | float) and not isinstance(value, bool):
                 record.metric(key, float(value))
@@ -556,13 +519,14 @@ def _run_data_stages(
     def leakage(record: StageRecord) -> list[Any]:
         from aegis_ml.features import leakage as leakage_mod
 
-        found = list(leakage_mod.detect_leakage(ctx["frame"], problem))
+        found = list(leakage_mod.detect_leakage(ctx["frame"], problem, seed=seed))
         record.metric("leaking_features", float(len(found)))
         if found:
             record.note(
-                "LEAKAGE FLAGGED: " + ", ".join(str(item) for item in found) + " — a "
-                "single feature that predicts the target this well is not signal, and the "
-                "gate refuses a run carrying one."
+                "LEAKAGE FLAGGED: "
+                + ", ".join(f"{s.feature} ({s.kind}, score {s.score:.3f})" for s in found)
+                + " — a single feature that predicts the target this well is not signal, "
+                "and the gate refuses a run carrying one."
             )
         return found
 
@@ -585,8 +549,9 @@ def _run_data_stages(
             test_size=test_size,
             calibration_size=calibration_size,
             seed=seed,
+            confidence_level=problem.requested_coverage,
         )
-        train, calibration, test = tuple(parts)
+        train, calibration, test = parts.train, parts.calibration, parts.test
         record.rows_in = int(len(ctx["frame"]))
         record.rows_out = int(len(train))
         record.metric("training_size", float(len(train)))
@@ -655,7 +620,7 @@ def _run_data_stages(
         test=ctx["test"],
         digest=ctx["digest"],
         provenance=provenance.get("provenance", "unknown"),
-        contract_ok=bool(getattr(contract_report, "ok", False)),
+        contract_ok=bool(contract_report.ok) if contract_report is not None else False,
         contract_report=contract_report,
         leakage=list(ctx.get("leakage") or []),
         learnability=ctx.get("learnability"),
@@ -805,6 +770,36 @@ def _classification_coverage(
         f"threshold {threshold:.4g}, mean set size {set_sizes / max(1, len(y_test)):.2f}"
     )
     return measured, note
+
+
+def _with_predictions(frame: Any, model: Any, problem: MLProblem) -> Any:  # noqa: ANN401
+    """Return a copy of ``frame`` carrying the model's output in a ``y_pred`` column.
+
+    Args:
+        frame: A frame holding at least the declared feature columns.
+        model: The fitted estimator.
+        problem: The supervised problem.
+
+    Returns:
+        A copy with ``y_pred`` added, plus ``y_pred_proba`` for a binary classifier.
+
+    NannyML's CBPE and DLE estimate performance *from the model's own output* on unlabelled
+    rows — that is the entire mechanism, and it is why the prediction column is not optional.
+    Scoring the frames here rather than assuming a prediction column already exists keeps the
+    estimate attributable to the exact artifact this run registered, instead of to whatever
+    wrote a column called ``y_pred`` at some earlier point.
+    """
+    scored = frame.copy()
+    features = frame[problem.feature_names]
+    scored["y_pred"] = model.predict(features)
+    if problem.target.task == "classification" and len(problem.target.levels) == 2:
+        proba = getattr(model, "predict_proba", None)
+        if proba is not None:
+            classes = list(getattr(model, "classes_", problem.target.levels))
+            positive = problem.target.levels[-1]
+            if positive in classes:
+                scored["y_pred_proba"] = proba(features)[:, classes.index(positive)]
+    return scored
 
 
 # ──────────────────────────────────────────────────────────────────── the flows ──
@@ -1031,9 +1026,11 @@ def train_flow(  # noqa: PLR0915 - one linear pipeline; splitting it would hide 
                 )
                 record.note(f"search ran in the isolated trainer venv: {settings.trainer_venv}")
             else:
-                from aegis_ml.automl import search as search_mod
+                # Full module path: ``aegis_ml.automl.__init__`` re-exports the function
+                # ``search``, which shadows the submodule of the same name.
+                from aegis_ml.automl.search import search as run_search
 
-                found = search_mod.search(
+                found = run_search(
                     bundle.train,
                     problem,
                     tiers=tiers,
@@ -1219,16 +1216,22 @@ def train_flow(  # noqa: PLR0915 - one linear pipeline; splitting it would hide 
         def shap(record: StageRecord) -> dict[str, Any]:
             from aegis_ml.explain import shap_report
 
-            importance = shap_report.global_importance(ctx["model"], bundle.test, problem)
+            importance = shap_report.global_importance(
+                ctx["model"], bundle.test, problem, seed=resolved_seed
+            )
             target = run_dir / "shap.html"
-            _call_first(
-                shap_report.render_html,
-                [
-                    ((target, importance), {}),
-                    ((target,), {"importance": importance}),
-                    ((target, ctx["model"], bundle.test, problem), {}),
+            shap_report.render_html(
+                target,
+                importance=importance,
+                problem=problem,
+                title=f"{problem.domain_id} — global SHAP attribution",
+                notes=[
+                    "Attributions describe THIS model's behaviour on the held-out split. "
+                    "They are not statements about the world, and a driver's sign is not a "
+                    "causal direction.",
                 ],
             )
+            record.metric("features_attributed", float(len(importance)))
             record.artifact("shap", target)
             return {"importance": importance, "path": str(target)}
 
@@ -1284,7 +1287,23 @@ def train_flow(  # noqa: PLR0915 - one linear pipeline; splitting it would hide 
         def card(record: StageRecord) -> dict[str, str]:
             from aegis_ml.explain import card as card_mod
 
-            built = card_mod.build_card(result)
+            shap_bundle = ctx.get("shap") or {}
+            built = card_mod.build_card(
+                result,
+                leaderboard=ctx.get("leaderboard"),
+                slices=list(ctx.get("slices") or []),
+                metrics=dict(measurement["metrics"]),
+                top_features=list(shap_bundle.get("importance") or []),
+                shap_report_path=shap_bundle.get("path"),
+                coverage_tolerance=settings.coverage_tolerance,
+                target_unit=problem.target.unit,
+                target_description=problem.target.description,
+                data_source=bundle.provenance,
+                tabpfn_used=bool(
+                    ctx.get("recipe") is not None and ctx["recipe"].tier == "tabpfn"
+                ),
+                notes=result.notes,
+            )
             written: dict[str, str] = {}
             for name, renderer, suffix in (
                 ("card_md", card_mod.render_markdown, ".md"),
@@ -1338,17 +1357,9 @@ def train_flow(  # noqa: PLR0915 - one linear pipeline; splitting it would hide 
                 encoding="utf-8",
             )
             paths["gate_inputs"] = str(run_dir / "gate_inputs.json")
-            if ctx.get("recipe") is not None:
-                (run_dir / "recipe.json").write_text(
-                    ctx["recipe"].model_dump_json(indent=2), encoding="utf-8"
-                )
-                paths["recipe"] = str(run_dir / "recipe.json")
-            if ctx.get("leaderboard") is not None:
-                (run_dir / "leaderboard.json").write_text(
-                    ctx["leaderboard"].model_dump_json(indent=2), encoding="utf-8"
-                )
-                paths["leaderboard"] = str(run_dir / "leaderboard.json")
-
+            # recipe.json, leaderboard.json and metrics.json are written by save_run from
+            # the entry itself, so there is exactly one writer for each and no way for a
+            # hand-written copy to drift from the registered result.
             entry = RegistryEntry(
                 run_id=resolved_run_id,
                 domain_id=problem.domain_id,
@@ -1357,10 +1368,15 @@ def train_flow(  # noqa: PLR0915 - one linear pipeline; splitting it would hide 
                 result=result,
                 paths=paths,
             )
-            saved = store.save_run(entry, model=ctx["model"], artifacts=paths)
-            record.artifact("run_dir", run_dir)
+            # `artifacts=` is deliberately not passed: every file above already lives in
+            # the run directory, and handing save_run their paths would copy each onto
+            # itself. `entry.paths` is carried through verbatim instead.
+            directory = store.save_run(entry, model=ctx["model"])
+            stored = store.load_entry(resolved_run_id)
+            record.artifact("run_dir", directory)
+            record.metric("artifacts", float(len(stored.paths)))
             record.note(f"registered as staging run {resolved_run_id}")
-            return saved if isinstance(saved, RegistryEntry) else entry
+            return stored
 
         graph.run(
             StageSpec(
@@ -1764,7 +1780,7 @@ def drift_flow(
     ctx = graph.context
 
     try:
-        def load(record: StageRecord) -> tuple[MLProblem, Any]:
+        def load(record: StageRecord) -> tuple[MLProblem, Any, Any]:
             reference_path = entry.paths.get("reference_frame")
             if not reference_path or not Path(reference_path).exists():
                 raise FileNotFoundError(
@@ -1775,15 +1791,25 @@ def drift_flow(
             problem_path = Path(entry.paths.get("problem", run_dir / "problem.json"))
             problem = MLProblem.model_validate_json(problem_path.read_text(encoding="utf-8"))
             reference = _pd().read_parquet(reference_path)
+            model = None
+            model_path = Path(entry.paths.get("model", run_dir / "model.joblib"))
+            if model_path.exists():
+                model = require(SERVE_EXTRA, "joblib").load(model_path)
+            else:
+                record.note(
+                    f"no persisted model at {model_path}: distribution drift is still "
+                    f"measurable, but the label-free performance estimate is not — it is a "
+                    f"function of the model's output and there is no model to ask."
+                )
             record.rows_out = int(len(reference))
             record.note(f"reference frame: {reference_path} ({len(reference)} rows)")
-            return problem, reference
+            return problem, reference, model
 
         graph.run(
             StageSpec(
                 name="load_reference",
-                description="load the frame this model was calibrated on",
-                outputs=("problem", "reference"),
+                description="load the frame this model was calibrated on, and the model",
+                outputs=("problem", "reference", "model"),
             ),
             load,
         )
@@ -1817,8 +1843,19 @@ def drift_flow(
         def estimate(record: StageRecord) -> dict[str, Any]:
             from aegis_ml.monitor import perf
 
+            model = ctx.get("model")
+            if model is None:
+                raise SkipStage(
+                    "no persisted model: CBPE/DLE estimate performance FROM the model's "
+                    "own output, so there is nothing to estimate from"
+                )
             estimated = dict(
-                perf.estimate_performance(ctx["reference"], current_frame, problem, run_id=run_id)
+                perf.estimate_performance(
+                    _with_predictions(ctx["reference"], model, problem),
+                    _with_predictions(current_frame, model, problem),
+                    problem,
+                    run_id=run_id,
+                )
             )
             for key, value in estimated.items():
                 if isinstance(value, int | float) and not isinstance(value, bool):
@@ -1845,8 +1882,8 @@ def drift_flow(
         estimated = ctx.get("estimated") or {}
         updates: dict[str, Any] = {}
         if report.estimated_metric_name is None and estimated:
-            name = str(estimated.get("metric_name") or estimated.get("estimated_metric_name") or "")
-            value = estimated.get("metric_value", estimated.get("estimated_metric_value"))
+            name = str(estimated.get("estimated_metric_name") or "")
+            value = estimated.get("estimated_metric_value")
             if name and isinstance(value, int | float):
                 updates["estimated_metric_name"] = name
                 updates["estimated_metric_value"] = float(value)
@@ -1859,14 +1896,18 @@ def drift_flow(
             report = report.model_copy(update=updates)
 
         def alert(record: StageRecord) -> Any:  # noqa: ANN401
-            from importlib import import_module
+            from aegis_ml.monitor import alerts as alerts_mod
 
-            alerts = import_module("aegis_ml.monitor.alerts")
-            raised = _call_first(
-                alerts.raise_alerts, [((report,), {}), ((report, problem), {})]
+            raised = list(alerts_mod.evaluate_alerts(report))
+            record.metric("alerts", float(len(raised)))
+            for item in raised:
+                record.note(f"[{item.level}] {item.code}: {item.message}")
+            record.note(
+                f"verdict {report.verdict} — recorded, not acted on: the served model is "
+                f"NOT withdrawn on drift. What this blocks is the promotion of anything "
+                f"calibrated on a reference that no longer describes the world."
             )
-            record.note(f"verdict {report.verdict}; alerts dispatched")
-            return raised
+            return [item.model_dump(mode="json") for item in raised]
 
         graph.run(
             StageSpec(

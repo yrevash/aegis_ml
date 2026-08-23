@@ -222,7 +222,7 @@ def classification_metrics(
     """Compute the classification metric set, adding probability metrics when available.
 
     ``accuracy`` is the card's headline (``ModelCard.metric_name``) and is also the metric
-    most easily faked by class imbalance: predicting the majority class on a 85/15 split
+    most easily inflated by class imbalance: predicting the majority class on a 85/15 split
     scores 0.85 while learning nothing. ``balanced_accuracy`` and ``f1_macro`` are therefore
     always reported next to it — on an imbalanced target the gap between them *is* the
     finding.

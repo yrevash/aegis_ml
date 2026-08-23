@@ -58,6 +58,33 @@ uv venv .venv-ml --python 3.11
 uv pip install --python .venv-ml -e '.[strong,serve]'
 ```
 
+### The `strong` tier resolves too — verified, not assumed
+
+| Package | Resolved |
+|---|---|
+| autogluon-tabular / -timeseries / -core / -common | 1.6.1 |
+| tabpfn | 8.4.0 (the TabPFN-2.5 model; the package major jumped independently of the model version) |
+| tabpfn-extensions | 0.6.0 |
+| torch / torchvision / torchmetrics | 2.10.0 / 0.25.0 / 1.9.0 |
+| sdv / ctgan / copulas | 1.38.1 / 0.12.1 / 0.14.1 |
+| mlforecast | 0.14.0 |
+| xgboost-cpu (AutoGluon's own) | 3.2.0 |
+
+**The important line in that table is the one that is not there.** `pandas`, `numpy` and
+`scikit-learn` resolve to **2.3.3 / 2.4.6 / 1.9.0** — byte-identical to the serving tier. So a
+model fitted in the trainer venv and a model re-fitted from its recipe in the serving venv
+see the same numerics, which is the assumption the portable-recipe design rests on. It was
+worth checking rather than hoping.
+
+Two pins had to be corrected to get here, both found by running the resolver:
+
+- `mlforecast>=1.0` → `>=0.13,<0.15`. `autogluon.timeseries` pins `mlforecast<0.15`, and an
+  unbounded floor made the entire `strong` extra unresolvable.
+- `lightgbm>=4.6` → `>=4.0` (no ceiling). See the section below — `nannyml` needs `<4.6`,
+  and the trainer venv installs `.[strong,serve]`, so both constraints apply at once.
+
+Exact pins frozen in `requirements-strong.lock.txt` (1,174 packages).
+
 ---
 
 ## A three-way constraint worth knowing about: lightgbm ↔ nannyml ↔ scikit-learn

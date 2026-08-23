@@ -184,38 +184,6 @@ def _load_frame(path: Path) -> Any:  # noqa: ANN401 - a pandas.DataFrame
     raise AssertionError("unreachable")  # pragma: no cover - _fail always raises
 
 
-def _resolve_entry_point(module_name: str, candidates: tuple[str, ...]) -> Any:  # noqa: ANN401
-    """Return the first named callable a sibling module exposes, or exit naming them all.
-
-    This package is assembled from modules authored independently against one brief. Where
-    a module's exact entry-point name was not pinned, the CLI names every spelling it will
-    accept and **refuses** when none is present, rather than silently doing nothing.
-
-    Args:
-        module_name: Dotted module path.
-        candidates: Accepted attribute names, in preference order.
-
-    Returns:
-        The resolved callable.
-
-    Raises:
-        typer.Exit: When the module is not importable, or exposes none of ``candidates``.
-    """
-    import importlib
-
-    try:
-        module = importlib.import_module(module_name)
-    except ImportError as exc:
-        _fail(f"{module_name} is not importable: {exc}")
-        raise AssertionError("unreachable") from exc  # pragma: no cover
-    for name in candidates:
-        found = getattr(module, name, None)
-        if callable(found):
-            return found
-    _fail(f"{module_name} exposes none of {candidates}; cannot run this command.")
-    raise AssertionError("unreachable")  # pragma: no cover - _fail always raises
-
-
 # ────────────────────────────────────────────────────────────────────────── doctor ──
 
 
@@ -306,16 +274,12 @@ def _realism_check(domain_id: str | None) -> tuple[str, bool | None]:
         measured — which is reported as "unknown", never as a pass.
     """
     from aegis_ml._require import require
-
-    try:
-        from aegis_ml.registry import store
-    except ImportError as exc:
-        return f"registry not importable: {exc}", None
+    from aegis_ml.registry import store
 
     try:
         entry = store.champion(domain_id) if domain_id else None
         if entry is None:
-            runs = list(store.list_runs(domain_id) if domain_id else store.list_runs())
+            runs = store.list_runs(domain_id=domain_id, limit=1)
             entry = runs[0] if runs else None
     except Exception as exc:  # noqa: BLE001 - doctor reports, never raises
         return f"registry unreadable: {type(exc).__name__}: {exc}", None
@@ -549,7 +513,7 @@ def init(
             {
                 "name": "driver_numeric",
                 "dtype": "numeric",
-                "description": "Replace me: a monotone driver of the target.",
+                "description": "Rename me: a monotone driver of the target.",
                 "unit": "unit",
                 "minimum": 0.0,
                 "maximum": 100.0,
@@ -558,7 +522,7 @@ def init(
             {
                 "name": "driver_categorical",
                 "dtype": "categorical",
-                "description": "Replace me: a categorical driver.",
+                "description": "Rename me: a categorical driver.",
                 "levels": ["alpha", "beta", "gamma"],
             },
         ],
@@ -573,9 +537,9 @@ def init(
     destination.write_text(json.dumps(scaffold, indent=2), encoding="utf-8")
     _echo(f"wrote {destination}")
     _echo(
-        "Next: replace the two placeholder features with the real ones — a categorical "
-        "feature MUST declare its levels, because an unseen level otherwise one-hot-encodes "
-        "to all zeros without raising."
+        "Next: rename the two example features to the real ones — a categorical feature "
+        "MUST declare its levels, because an unseen level otherwise one-hot-encodes to all "
+        "zeros without raising."
     )
 
     if templates is not None:
@@ -668,7 +632,7 @@ def synth(
     rows: int = typer.Option(2000, help="How many synthetic rows to generate."),
     problem: Path = typer.Option(None, help="Problem JSON."),
     adapter: str = typer.Option(None, help="Module exposing PROBLEM."),
-    seed: int = typer.Option(None, help="Random seed; defaults to settings.random_seed."),
+    model: str = typer.Option("gaussian_copula", help="'gaussian_copula' or 'ctgan'."),
 ) -> None:
     """Fit SDV on a real frame and sample more rows from it — the "make 10× more" path.
 
@@ -678,28 +642,28 @@ def synth(
         rows: How many rows to sample.
         problem: Problem JSON.
         adapter: Module exposing ``PROBLEM``.
-        seed: Random seed.
+        model: Which SDV synthesiser to fit — the cheap copula, or CTGAN.
 
     Raises:
-        typer.Exit: When the synthesiser module is unavailable or exposes no known entry point.
+        typer.Exit: When SDV is not installed, naming the install command.
 
     Synthetic rows are labelled synthetic wherever they travel. A model fitted on them is a
     model fitted on a *copula's opinion* of the data, and the model card must say so.
     """
     spec = _load_problem(problem, adapter)
     frame = _load_frame(data)
-    generate = _resolve_entry_point(
-        "aegis_ml.data.synth", ("synthesize", "synthesise", "synth_frame", "generate", "sample")
-    )
-    resolved_seed = settings.random_seed if seed is None else seed
-    result = generate(frame, spec, n_rows=rows, seed=resolved_seed)
-    produced = result[0] if isinstance(result, tuple) else result
+    from aegis_ml.data import synth as synth_mod
+
+    produced, quality = synth_mod.synthesize(frame, n=rows, model=model, problem=spec)
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     produced.to_parquet(out, index=False)
     _echo(f"wrote {len(produced)} synthetic rows to {out}")
-    if isinstance(result, tuple) and len(result) > 1:
-        _echo("quality report:")
-        _echo(json.dumps(result[1], indent=2, default=str))
+    _echo("SDMetrics quality report:")
+    _echo(json.dumps(quality, indent=2, default=str))
+    _echo(
+        "These rows are a copula's opinion of your data, not your data. Any model fitted "
+        "on them must say so on its card."
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────── train ──
@@ -1150,7 +1114,7 @@ def registry(
     from aegis_ml.registry import store
 
     try:
-        entries = list(store.list_runs(domain_id) if domain_id else store.list_runs())[:limit]
+        entries = store.list_runs(domain_id=domain_id, limit=limit)
     except Exception as exc:  # noqa: BLE001 - the typed refusal's message is the output
         _fail(f"{type(exc).__name__}: {exc}")
         return
@@ -1203,7 +1167,7 @@ def serve(
     Raises:
         typer.Exit: Non-zero when FastAPI or uvicorn is not installed.
 
-    In a real deployment the host mounts :func:`aegis_ml.serve.router.build_router` into its
+    In production the host mounts :func:`aegis_ml.serve.router.build_router` into its
     own FastAPI app instead — that keeps one process, one auth layer and one OpenAPI schema.
     This command is the standalone convenience, not the deployment path.
     """
@@ -1213,8 +1177,8 @@ def serve(
         fastapi = require("fastapi", "fastapi")
         uvicorn = require("uvicorn", "uvicorn")
     except ImportError as exc:
-        _fail(str(exc))
-        return
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(1) from exc
 
     from aegis_ml.serve.router import build_router
 

@@ -701,6 +701,27 @@ def build_card(
     )
 
 
+def _format_metric(name: str, value: float) -> str:
+    """Render one metric value, keeping counts as counts.
+
+    ``score()`` returns a few honest bookkeeping counts alongside the metrics —
+    ``mape_n_excluded`` (rows whose actual was zero, so MAPE could not be defined on them)
+    and ``n_classes``. Printing those to four decimal places reads as a measurement with a
+    precision it does not have, and a reader who sees "n_classes: 2.0000" stops trusting the
+    numbers next to it.
+
+    Args:
+        name: The metric key.
+        value: Its value.
+
+    Returns:
+        The formatted value.
+    """
+    if name.startswith("n_") or name.endswith(("_n_excluded", "_rows", "_size")):
+        return str(int(value))
+    return f"{value:.4f}"
+
+
 def _coverage_rows(card: ExtendedModelCard) -> list[tuple[str, str]]:
     """Build the requested/measured coverage rows both renderers share.
 
@@ -748,7 +769,6 @@ def render_markdown(card: ExtendedModelCard) -> str:
         A Markdown document. Section order matches :func:`render_html` exactly so the two
         can be read against each other without hunting.
     """
-    unit = f" {card.target_unit}" if card.target_unit else ""
     lines: list[str] = [
         f"# Model card — {card.domain_id} / {card.run_id}",
         "",
@@ -762,7 +782,7 @@ def render_markdown(card: ExtendedModelCard) -> str:
         f"- Domain: `{card.domain_id}`",
         f"- Created: {card.created_at or 'not stamped'}",
         f"- Task: {card.task}",
-        f"- Target: `{card.target}`{unit}",
+        f"- Target: `{card.target}`" + (f" ({card.target_unit})" if card.target_unit else ""),
         "",
         "## Data",
         "",
@@ -822,7 +842,7 @@ def render_markdown(card: ExtendedModelCard) -> str:
         )
     for name, value in sorted(card.metrics.items()):
         if name != card.metric_name:
-            lines.append(f"- {name}: {value:.4f}")
+            lines.append(f"- {name}: {_format_metric(name, value)}")
 
     lines += ["", "## Conformal coverage — requested vs measured", ""]
     lines += ["| Field | Value |", "| --- | --- |"]
@@ -946,7 +966,6 @@ def render_html(card: ExtendedModelCard) -> str:
     Returns:
         A complete HTML document as a string.
     """
-    unit = f" {card.target_unit}" if card.target_unit else ""
     coverage = card.coverage
     verdict = coverage.meets_request
     verdict_class = "warnv" if verdict is None else ("pass" if verdict else "fail")
@@ -995,7 +1014,7 @@ def render_html(card: ExtendedModelCard) -> str:
         ("Domain", card.domain_id),
         ("Created", card.created_at or "not stamped"),
         ("Task", card.task),
-        ("Target", f"{card.target}{unit}"),
+        ("Target", f"{card.target}{f' ({card.target_unit})' if card.target_unit else ''}"),
         ("Target meaning", card.target_description or "not declared"),
     ]:
         body.append(f"<tr><th>{escape(label)}</th><td>{escape(value)}</td></tr>")
@@ -1071,7 +1090,8 @@ def render_html(card: ExtendedModelCard) -> str:
     for name, value in sorted(card.metrics.items()):
         if name != card.metric_name:
             body.append(
-                f"<tr><th>{escape(name)}</th><td class='num'>{value:.4f}</td></tr>"
+                f"<tr><th>{escape(name)}</th>"
+                f"<td class='num'>{escape(_format_metric(name, value))}</td></tr>"
             )
     body.append("</table>")
 

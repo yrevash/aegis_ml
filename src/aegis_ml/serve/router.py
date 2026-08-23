@@ -65,9 +65,9 @@ def _list_runs(domain_id: str | None, limit: int) -> list[dict[str, Any]]:
     """Read the registry, newest first. Blocking; always called through a thread."""
     from aegis_ml.registry import store
 
-    entries = store.list_runs(domain_id) if domain_id else store.list_runs()
+    entries = store.list_runs(domain_id=domain_id, limit=limit)
     rows: list[dict[str, Any]] = []
-    for entry in list(entries)[:limit]:
+    for entry in entries:
         result = entry.result
         rows.append(
             {
