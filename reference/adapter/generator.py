@@ -98,7 +98,6 @@ from reference.adapter.schema import (
 __all__ = [
     "DOMAIN_SERIES_LABEL",
     "DOMAIN_SERIES_UNIT",
-    "EXCURSION_SHARE",
     "CompleteFn",
     "DatasetQualityReport",
     "GeneratorConfig",
@@ -114,16 +113,6 @@ _EPOCH = datetime(2025, 6, 2, 8, 0, 0)
 
 Far enough in the past that every generated shipment predates "now": a record dated in the
 future makes the lookup tool's age negative and makes the forecast series end after today.
-"""
-
-EXCURSION_SHARE: float = 0.28
-"""Share of labelled shipments that carry ``excursion_flag = excursion``.
-
-Deliberately imbalanced, and deliberately not 20/80. The learnability probe raises its
-accuracy floor to the majority-class rate plus a margin — a constant predictor must not
-pass — so at 20/80 the usable band between "beats the majority" and "suspiciously easy"
-narrows to a few points. At 28/72 the floor sits near 0.74 and the target band's ceiling at
-0.88, which leaves room for a real classifier to demonstrate a real margin.
 """
 
 
@@ -792,7 +781,9 @@ def _build_shipments(
             + excursion_noise_sigma * multiplier * draw.excursion_noise_unit
         )
 
-    flags = _excursion_labels(scores, share=EXCURSION_SHARE, flip_rate=cfg.label_flip_rate)
+    flags = _excursion_labels(
+        scores, share=ml_spec.EXCURSION_SHARE, flip_rate=cfg.label_flip_rate
+    )
 
     finished: dict[str, tuple[float, ExcursionFlag]] = {
         draw.shipment.id: (risks[position], flags[position])

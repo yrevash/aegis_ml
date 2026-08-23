@@ -174,7 +174,7 @@ class ExcursionFlag(StrEnum):
 
     The domain's **secondary, classification** target. Deliberately two-valued and
     deliberately imbalanced in generated data (see
-    :data:`~reference.adapter.generator.EXCURSION_SHARE`): most shipments arrive clean, and
+    :data:`~reference.adapter.ml_spec.EXCURSION_SHARE`): most shipments arrive clean, and
     a classifier that beats the majority-class rate has genuinely learned something.
     """
 

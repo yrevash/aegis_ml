@@ -98,6 +98,7 @@ __all__ = [
     "CONFOUNDERS",
     "CONFOUNDER_SHARE",
     "EXCURSION_PROBLEM",
+    "EXCURSION_SHARE",
     "EXCURSION_SIGNAL_R2",
     "FEATURES",
     "FEATURE_NAMES",
@@ -606,6 +607,17 @@ LABEL_FLIP_RATE: float = 0.03
 Uniform random label noise is the wrong model. The shipment nobody could call either way is
 the one that gets mislabelled — a two-degree touch at hour 50 that one reviewer writes up
 and another does not — not a shipment three standard deviations into the clean region.
+"""
+
+EXCURSION_SHARE: float = 0.28
+"""Share of labelled shipments carrying ``excursion_flag = excursion``.
+
+Deliberately imbalanced, and deliberately not 20/80. The learnability probe raises its
+accuracy floor to the majority-class rate plus a margin — a constant predictor must not pass
+— so at 20/80 the usable band between "beats the majority" and "suspiciously easy" narrows
+to a few points and a perfectly good classifier can fail for arithmetic reasons. At 28/72
+the floor sits near 0.74 against a band ceiling of 0.88, which leaves room for a real
+classifier to demonstrate a real margin.
 """
 
 EXCURSION_SIGNAL_R2: float = 0.86
