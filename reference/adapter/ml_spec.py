@@ -98,7 +98,7 @@ __all__ = [
     "CONFOUNDERS",
     "CONFOUNDER_SHARE",
     "EXCURSION_PROBLEM",
-    "EXCURSION_TARGET_ACCURACY",
+    "EXCURSION_SIGNAL_R2",
     "FEATURES",
     "FEATURE_NAMES",
     "HETEROSCEDASTIC_FEATURE",
@@ -608,13 +608,14 @@ the one that gets mislabelled — a two-degree touch at hour 50 that one reviewe
 and another does not — not a shipment three standard deviations into the clean region.
 """
 
-EXCURSION_TARGET_ACCURACY: float = 0.86
-"""Signal fidelity requested for the classification score before the boundary cut.
+EXCURSION_SIGNAL_R2: float = 0.86
+"""Signal fidelity of the score the ``excursion_flag`` class boundary is cut from.
 
-Not the achieved accuracy: the boundary cut and :data:`LABEL_FLIP_RATE` both cost some of
-it, so the realised held-out accuracy lands lower. The measured value is what
-:func:`aegis_ml.data.latent.measure_learnability` reports and what the demo prints; this
-number is the knob that puts it inside the 0.65–0.88 band.
+**Not the achieved accuracy.** The boundary cut and :data:`LABEL_FLIP_RATE` both cost some
+of it, so the realised held-out accuracy lands lower — which is the number
+:func:`aegis_ml.data.latent.measure_learnability` reports and the demo prints. This is the
+one knob that moves it, and it is set where it is because that is where the measured
+accuracy lands inside the 0.65–0.88 band with real margin over the majority-class rate.
 """
 
 MISSING_GAP_TRIGGER_LEVEL: str = CarrierTier.ECONOMY.value
