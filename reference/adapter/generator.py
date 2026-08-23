@@ -73,7 +73,7 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any, Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 from reference.adapter import ml_spec
 from reference.adapter.schema import (
@@ -1011,9 +1011,16 @@ class DatasetQualityReport(BaseModel):
         ge=0.0, le=1.0, description="Share of shipments with no published telemetry interval."
     )
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def ok(self) -> bool:
-        """Whether every hard quality check passed."""
+        """Whether every hard quality check passed.
+
+        A ``computed_field`` rather than a plain ``property`` so the verdict survives
+        ``model_dump()``. A quality report that serialises its six individual checks but
+        drops the answer they add up to forces every JSON consumer to re-derive the AND —
+        and one of them will get it wrong, or read a missing key as False.
+        """
         return (
             self.referential_integrity
             and self.product_coverage

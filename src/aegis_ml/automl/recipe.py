@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import inspect
 import json
+from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -173,13 +174,15 @@ def _task_of_kind(kind: str) -> str | None:
 def is_portable_kind(kind: str, *, task: str | None = None) -> bool:
     """Return whether ``kind`` may cross into this interpreter and be constructed here.
 
-    Three conditions, all of them necessary:
+    Four conditions, all of them necessary:
 
     1. the name is on the allowlist (nothing else is ever imported);
     2. its module is importable *in this interpreter* — LightGBM is on the allowlist but
        is a ``[strong]`` extra, so a search running in the trainer venv must not select it
        as "portable" when the serving venv cannot construct it;
-    3. it matches the task, so a ``XGBClassifier`` cannot end up in a regression recipe.
+    3. its estimator can actually be **fitted** here, not merely imported — see
+       :func:`_wrapper_usable`;
+    4. it matches the task, so a ``XGBClassifier`` cannot end up in a regression recipe.
 
     Args:
         kind: Estimator class name from a search result.
@@ -192,7 +195,47 @@ def is_portable_kind(kind: str, *, task: str | None = None) -> bool:
     module = PORTABLE_KINDS.get(kind)
     if module is None or not is_available(module.split(".")[0]):
         return False
+    if not _wrapper_usable(kind):
+        return False
     return not (task is not None and _task_of_kind(kind) not in (None, task))
+
+
+@cache
+def _wrapper_usable(kind: str) -> bool:
+    """Return whether ``kind``'s estimator can be constructed AND fitted in this interpreter.
+
+    Importability is not usability, and the gap is currently real rather than theoretical.
+    ``nannyml`` pins ``lightgbm<4.6``; lightgbm below 4.6 calls
+    ``sklearn.utils.validation.check_X_y(..., force_all_finite=)``, a keyword scikit-learn
+    removed in 1.8. Against the sklearn this project resolves to, ``import lightgbm``
+    succeeds and every ``LGBMRegressor(...).fit(...)`` raises ``TypeError``.
+
+    Without this probe the consequence is not a missing candidate, it is a **dead tier**:
+    ``_search_flaml`` builds its ``estimator_list`` from this predicate, FLAML accepts
+    ``lgbm``, and the whole tier dies partway through with a message about a keyword
+    argument. Observed exactly that in a demo run.
+
+    The probe is a two-row fit, run once per class and cached. That is cheap enough to pay
+    at capability-report time and is the only check that answers the actual question —
+    version arithmetic across three packages would not.
+
+    Args:
+        kind: Estimator class name from the allowlist.
+
+    Returns:
+        ``True`` when a two-row fit succeeds; ``False`` when construction or fitting raises.
+    """
+    if not kind.startswith("LGBM"):
+        return True
+    try:
+        module = require("aegis-ml[serve]", PORTABLE_KINDS[kind])
+        cls = getattr(module, kind)
+        est = cls(n_estimators=2, verbose=-1)
+        est.fit([[0.0, 1.0], [1.0, 0.0]], [0.0, 1.0] if kind.endswith("Regressor") else [0, 1])
+    # audit-ok: the probe's boolean IS the report; callers record the exclusion + reason.
+    except Exception:  # noqa: BLE001 - any failure means "cannot be fitted here"
+        return False
+    return True
 
 
 def estimator_class(kind: str, *, task: str | None = None) -> type:

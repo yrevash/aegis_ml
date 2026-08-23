@@ -94,6 +94,7 @@ from aegis_ml.pipelines.flows import (  # noqa: E402 - same reason
     realism_band_for,
     train_flow,
 )
+from aegis_ml.serve.tools import ML_TOOL_NAMES  # noqa: E402 - same reason
 from aegis_ml.settings import settings  # noqa: E402 - same reason
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -375,12 +376,13 @@ def _train(frame: pd.DataFrame, config: DemoConfig) -> TrainResult:
             print(f"     skipped {tier}: {reason}")
     if result.slices:
         worst = min(result.slices, key=lambda s: s.metric_value)
+        print()
         _kv(
-            "\n  worst slice",
+            "worst slice",
             f"{worst.feature}={worst.level} → {worst.metric_name}="
             f"{worst.metric_value:.4f} on {worst.n_rows} rows",
-            width=32,
         )
+        _kv("slices measured", len(result.slices))
     _kv("artifact", result.artifact_path)
     return result
 
@@ -650,7 +652,9 @@ def run_demo(config: DemoConfig | None = None) -> dict[str, Any]:
     decision = _promote(result.run_id)
     drift = _drift(result.run_id, resolved)
 
-    ml_names = sorted(name for name in TOOL_REGISTRY if name in _ML_TOOL_NAMES)
+    # Intersected with the live registry rather than assumed: the summary line claims
+    # what THIS registry holds, and a tool that failed to splice in must not be counted.
+    ml_names = sorted(set(TOOL_REGISTRY) & set(ML_TOOL_NAMES))
     payload: dict[str, Any] = {
         "finished_at": datetime.now(tz=UTC).isoformat(timespec="seconds"),
         "domain_id": DOMAIN_ID,
@@ -713,23 +717,6 @@ def run_demo(config: DemoConfig | None = None) -> dict[str, Any]:
         "section 2 is the one to read first: it is what says this data is honest."
     )
     return payload
-
-
-_ML_TOOL_NAMES = frozenset(
-    {
-        "predict_outcome",
-        "explain_prediction",
-        "whatif_scenario",
-        "forecast_series",
-        "check_model_health",
-    }
-)
-"""The five ML tool names, for splitting the registry count in the summary.
-
-Spelled out rather than imported so the summary line stays truthful even if the serving
-extra is not installed: it counts what is *in this registry*, which is the thing the
-sentence claims.
-"""
 
 
 def main() -> int:

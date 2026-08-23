@@ -135,12 +135,19 @@ after the fact.
 `TABPFN_TOKEN`. Fully documented in `RESOLUTION.md`; the tier now reports it instead of
 crashing. **Needs a browser and a network — do it before hackathon day, not on it.**
 
-### 12. The lightgbm ↔ nannyml ↔ scikit-learn triangle
+### 12. ~~The lightgbm ↔ nannyml ↔ scikit-learn triangle~~ — HANDLED
 `nannyml` pins `lightgbm<4.6`; lightgbm `<4.6`'s *sklearn wrapper* is broken against
 sklearn ≥1.8 (`check_X_y(force_all_finite=)`, removed in 1.8). Measured: NannyML's DLE works,
 FLAML with `lgbm` works (both use LightGBM's native API), only a direct
-`LGBMRegressor(...).fit(...)` raises. Resolved by design — `is_portable_kind` drops that
-member with its reason recorded. Full analysis in `RESOLUTION.md`.
+`LGBMRegressor(...).fit(...)` raises. **Was still killing the FLAML tier**, because `is_portable_kind` checked only importability
+and `_search_flaml` builds its `estimator_list` from that predicate — so FLAML accepted
+`lgbm` and died partway through with a keyword-argument error. Observed in a demo run.
+
+**Fixed**: `is_portable_kind` now also requires that the estimator can be *fitted* here, via
+a cached two-row probe (`recipe._wrapper_usable`). Version arithmetic across three packages
+would not have answered the actual question; a fit does. LightGBM is now correctly excluded,
+FLAML runs clean, and in the latest demo the FLAML tier **wins** at r²=0.7328. Full analysis
+in `RESOLUTION.md`.
 
 ### 13. Conformance-check numbering is ambiguous
 Aegis has **14 test functions** grouped under **11 section headers**, and `AGENTS.md` refers
