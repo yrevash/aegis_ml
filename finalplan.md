@@ -59,7 +59,7 @@ Models that cannot be re-fit in the serving venv (TabPFN, AutoGluon's stacked en
 
 ### D6. TabPFN-2.5 — enabled, license-flagged
 
-Weights are Prior Labs License: research/evaluation permitted, commercial/production not. A hackathon demo is evaluation use. It is on by default; the CLI and every model card it touches print the notice. `AEGIS_ML_TABPFN=0` disables it.
+Weights are Prior Labs License: research/evaluation permitted, commercial/production not. A hackathon demo is evaluation use. It is on by default; the CLI and every model card it touches print the notice. `AEGIS_ML_ENABLE_TABPFN=0` disables it.
 
 ---
 
@@ -274,6 +274,6 @@ Hackathon synthetic data is 1k–10k rows — precisely TabPFN-2.5's 100%-win-ra
 | 3 | `resolve_spec()` silently returns `FALLBACK_SPEC` (4-feature noise) on a misspelled attribute | Medium | `contracts/spec.py` **generates** `ml_spec.py`, so the five names cannot be misspelled. Conformance check #12 is the backstop. |
 | 4 | Console still shows the old domain's words after a perfect Python retarget | **High** | Step 8 of the runbook names all four `web/` files explicitly. Outside the Python-only vocabulary scan. |
 | 5 | Old corpus/skills survive a `cp -r` and get served by retrieval | Medium | `rsync -a --delete` in step 5. |
-| 6 | TabPFN licence questioned by judges | Low | Off-switch (`AEGIS_ML_TABPFN=0`); notice printed on every card; AutoGluon tier matches it given budget. |
+| 6 | TabPFN licence questioned by judges | Low | Off-switch (`AEGIS_ML_ENABLE_TABPFN=0`); notice printed on every card; AutoGluon tier matches it given budget. |
 | 7 | Prefect/MLflow server unavailable at demo time | Medium | Both are optional shims. Plain-Python flows and the filesystem registry always work. |
 | 8 | Adding a genuinely new specialist requires a core `graph.py` edit | Low | Roster falls back to `qa` with a warning, never raises. `SPECIALIST_NODES` has `qa`/`memory`/`team`; a third specialist is the one other sanctioned core edit and must be reported. |

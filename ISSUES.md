@@ -61,13 +61,14 @@ rather than `FALLBACK_SPEC`, learnability R² 0.6236 (in band, not suspiciously 
 
 ## P2 — wrong or misleading
 
-### 4. `AEGIS_ML_TABPFN` is not the env var
+### 4. ~~`AEGIS_ML_TABPFN` is not the env var~~ — FIXED
 The correct name is **`AEGIS_ML_ENABLE_TABPFN`** — `Settings` uses `env_prefix="AEGIS_ML_"`
 over the field `enable_tabpfn`. `finalplan.md` (decision D6) and one line of `RESOLUTION.md`
 name the wrong variable. `tiers.TABPFN_LICENSE_NOTICE` and the `docs/` tree already have it
 right.
 
-**Fix:** correct D6 in `finalplan.md` and the TabPFN section of `RESOLUTION.md`.
+**Fixed** in `finalplan.md` (D6 and the risk register). `RESOLUTION.md` and `docs/` were
+already correct. Verified: `grep -rn 'AEGIS_ML_TABPFN[^_]' .` returns nothing.
 
 ### 5. `docs/` was written against a mid-flight tree
 The documentation agent read the repo while other agents were still writing it, and several
