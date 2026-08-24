@@ -3,7 +3,10 @@
 > Resolved entries are struck through and kept, not deleted: how a defect was found is
 > usually more useful than the fact that it is gone.
 >
-> **Status: 10 of 16 fixed.** The 6 remaining are 1 accepted limitation (#7, ONNX, off by
+> **Status: 12 of 21 fixed.** Five more issues surfaced while writing the beginner docs
+> (#17–21); the two serious ones are fixed.
+>
+> Previously: 10 of 16 fixed. The 6 remaining are 1 accepted limitation (#7, ONNX, off by
 > default), 1 action for the operator (#11, TabPFN token — needs a browser), and 4 defects in
 > *Aegis's own* repo (#13–16) recorded so they are not inherited by accident.
 
@@ -140,6 +143,48 @@ produce silently.
 
 ---
 
+## Found while writing the beginner docs — all fixed
+
+### 17. ~~`config/*.toml` was read by nothing~~ — FIXED
+All five files opened with "Read by `aegis_ml.<module>`" and **no code read them** — there
+was no `tomllib` import anywhere in the package. Editing `automl.toml`'s `time_budget` on
+hackathon morning would have changed nothing, silently. Exactly the class of no-op this
+project exists to eliminate, sitting in the config directory the whole time.
+
+**Fixed**: `aegis_ml/config.py` loads them into `Settings` via an explicit key→field table,
+layered *beneath* the environment (`AEGIS_ML_*` > TOML > field default). 16 settings now
+load from the files. The mapping is written out rather than derived, so a typo'd section
+cannot be absorbed as "a key for a setting that doesn't exist yet" — and `unknown_keys()`
+reports the 19 keys nothing consumes, which `aegis-ml doctor` prints under
+**NOT CONSUMED … editing them does nothing**.
+
+### 18. ~~Two realism bands disagreed~~ — FIXED
+`config/contracts.toml` said classification accuracy `[0.65, 0.88]`; `flows.REALISM_ACCURACY_BAND`
+— what `doctor`, `data_flow` and the charts actually used — said `(0.62, 0.92)`. Harmless
+while the TOML was inert; a behaviour change the moment it was wired up.
+
+**Fixed**: `realism_band_for` and `doctor` now read `settings.realism_r2_band` /
+`realism_accuracy_band`; the module constants remain their defaults. The TOML was aligned to
+the values that were genuinely running, so wiring it up changed nothing.
+
+### 19. `aegis-ml` console script cannot import a cwd-relative adapter — OPEN
+`aegis-ml contract --adapter reference.problem` fails in an `importlib` traceback because the
+entry point does not put the working directory on `sys.path`. `python -m aegis_ml.cli` works,
+because `-m` adds it. Documented in `docs/learn/08-your-first-run.md §0` and its troubleshooting
+table. **Fix**: prepend `Path.cwd()` to `sys.path` in the CLI entry point.
+
+### 20. `visuals/manifest.json` mislabels the leaderboard best — OPEN
+The leaderboard slot labels `extra_trees` (the *lowest* score) as `"best"` and derives a
+negative `ceiling_gap` from it. The rendered chart is correct; only that JSON field is wrong.
+Cosmetic unless something downstream trusts the manifest.
+
+### 21. `RUN_SUMMARY.md` labels the wrong pair "realism band" — OPEN
+It prints `[0.15, 0.95]` — the *learnability guard* bounds (`learnable_r2_floor` and
+`latent.R2_CEILING`) — under the heading "realism band", while the console output for the same
+run prints `[0.45, 0.80]` from `realism_band_for`. Two different bands, one label.
+
+---
+
 ## P3 — notes, stale prose, upstream
 
 ### 11. TabPFN needs one-time browser setup
@@ -204,7 +249,7 @@ For contrast, so this file is not read as a verdict on the whole package:
 | Evidently drift | stable → 0.000 share `pass`; shifted → 0.429 share `block`, correct columns named |
 | NannyML label-free estimate | `estimated_rmse = 2.07 [1.71, 2.44]` |
 | Optuna HPO | r² 0.6158 → 0.6556 in 12 trials; SQLite study resumes |
-| Test suite | **314 passed**, 0 failed, 0 xfail |
+| Test suite | **315 passed**, 0 failed, 0 xfail |
 | Per-run visuals | 9 PNGs + `index.html` (0 external refs) + `interactive.html`, written automatically by the `visuals` stage in `train_flow` and `drift_flow` |
 | Held-out split provenance | recovered and **verified**: re-scoring the persisted model on the recovered rows reproduces the registered r²=0.722406014223 exactly; a wrong seed gives 0.7805 and is rejected |
 | Trainer-venv subprocess bridge | real child process, identical result in-process vs cross-process; crash path surfaces the traceback |

@@ -225,7 +225,17 @@ def realism_band_for(problem: MLProblem) -> tuple[float, float]:
         ``(floor, ceiling)`` — :data:`REALISM_R2_BAND` for regression,
         :data:`REALISM_ACCURACY_BAND` for classification.
     """
-    return REALISM_R2_BAND if problem.target.task == "regression" else REALISM_ACCURACY_BAND
+    # Read through settings, not off the module constants, so `config/contracts.toml` and
+    # `AEGIS_ML_REALISM_*` actually reach the band every flow, the doctor line and the
+    # realism chart are judged against. The constants above remain the defaults those
+    # settings fields fall back to, so behaviour is unchanged when nothing overrides them —
+    # but there is now exactly one source of truth instead of two that could drift apart.
+    band = (
+        settings.realism_r2_band
+        if problem.target.task == "regression"
+        else settings.realism_accuracy_band
+    )
+    return (float(band[0]), float(band[1]))
 
 
 def _resolve_frame(

@@ -1,8 +1,8 @@
 # Drift detection and label-free performance estimation.
 #
-# Read by `aegis_ml.monitor.*`. Thresholds here gate PROMOTION, never SERVING — Aegis
-# serves the model it has and flags it. Withdrawing a model on a drift signal would be a
-# silent downgrade, which is the one thing this platform refuses to do.
+# Loaded by `aegis_ml.config` into `aegis_ml.settings.Settings`, beneath the environment:
+#   AEGIS_ML_* env var  >  this file  >  the field default in settings.py
+# `aegis-ml doctor` prints any key here that no setting consumes.
 
 [drift]
 # Share of features showing distribution drift. A SHARE, not a single p-value, on purpose:

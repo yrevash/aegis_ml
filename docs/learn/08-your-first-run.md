@@ -172,21 +172,20 @@ numbers used throughout this track:
 - domain quality gate: PASS
 
 ## Realism — primary target spoilage_risk_pct (regression, %)
-| held-out R² (measured)                  | 0.6719 |
+| held-out R² (measured)                   | 0.6719 |
 | oracle R² (knows the generating function)| 0.7397 |
-| headroom (achieved ÷ oracle)            | 90.8%  |
-| analytic R² ceiling                     | 0.7400 |
-| suspiciously easy?                      | False  |
-| noise-to-signal                         | 0.593  |
-| unobserved confounders   | unrecorded_tarmac_delay, undocumented_precool_quality |
-| confounder share of variance            | 10.4%  |
-| heteroscedastic on   | transit_hours (1.48× spread, top vs bottom quartile) |
-| features with NO driver                 | origin_region, payload_kg |
+| headroom (achieved ÷ oracle)             | 90.8%  |
+| analytic R² ceiling                      | 0.7400 |
+| suspiciously easy?                       | False  |
+| noise-to-signal                          | 0.593  |
+| unobserved confounders  | unrecorded_tarmac_delay, undocumented_precool_quality |
+| confounder share of variance             | 10.4%  |
+| heteroscedastic on  | transit_hours (1.48× spread, top vs bottom quartile) |
+| features with NO driver                  | origin_region, payload_kg |
 
 ## Realism — secondary target excursion_flag (classification)
-- held-out accuracy: 0.8468 (band [0.62, 0.92])
-- majority-class rate 0.7210, so the floor is 0.7410 — the classifier clears a constant
-  predictor by +0.1257
+- held-out accuracy: 0.8468 (band [0.62, 0.92]); majority-class rate 0.7210, so the floor
+  is 0.7410 — the classifier clears a constant predictor by +0.1257
 
 ## Train
 - r2 on the held-out test split: 0.7199
@@ -222,21 +221,10 @@ registry_store/
 open registry_store/runs/<run_id>/visuals/index.html
 ```
 
-One page, in the order of [chapter 05](05-reading-the-charts.md):
-
-```
-cold_chain_logistics — spoilage_risk_pct
-  Prediction vs measured, with the conformal band
-  Residuals across the prediction range
-  Conformal coverage — requested vs measured, overall and by segment
-  Global SHAP attribution — every declared feature
-  Performance by segment
-  Leaderboard — every candidate the search scored
-  Realism — is this data honestly hard?
-  Feature distributions and missingness
-  Drift — reference vs current distributions
-  Forecast with conformal band and backtest origins      ← omitted, with its reason
-```
+One page, headed `cold_chain_logistics — spoilage_risk_pct`, with the nine charts in the order
+of [chapter 05](05-reading-the-charts.md) and a tenth section — "Forecast with conformal band
+and backtest origins" — present but **omitted with its reason**, because this run registered a
+tabular model rather than a series.
 
 It is **fully self-contained**: images are inlined, and a scan of the file finds **zero**
 `http://` or `https://` references. It opens on a laptop with no network. `interactive.html`
@@ -289,14 +277,11 @@ And the model card:
 # Model card — cold_chain_logistics / cold_chain_logistics-20260824T030131425-34e3f5
 
 ## Data
-- Training rows: 1301
-- Calibration rows (disjoint): 326
-- Held-out test rows: 407
+- Training rows: 1301 · Calibration rows (disjoint): 326 · Held-out test rows: 407
 - Dataset digest: sha256:02755eb024b48227569db71809ea4f9191212d89b41b2598986e6c9ffd6d6367
 
 ## Model
-- Recipe tier: flaml
-- Ensemble: xgb_limitdepth (XGBRegressor, w=1.0)
+- Recipe tier: flaml · Ensemble: xgb_limitdepth (XGBRegressor, w=1.0)
 
 ### Leaderboard (losers included — the margin is the finding)
 | ridge_reference       | baseline | 0.7460 | NO  |     |
@@ -327,11 +312,9 @@ Supply fresh labelled data (frame=<DataFrame>, source=<path>, or `--data`), or p
 allow_in_sample=True to ask for the artifact-loads-and-predicts integrity check on purpose.
 
 stage     status  secs  rows  detail
---------  ------  ----  ----  ------------------------------------------------------------
+--------  ------  ----  ----  --------------------------------------------------
 load_run  ok      0.85  -
-ingest    FAILED  0.00  -     InSampleEvaluationError: Re-scoring run 'cold_chain_logisti…
-
-eval_flow run=…-34e3f5 total=0.85s  FAILED — InSampleEvaluationError: …
+ingest    FAILED  0.00  -     InSampleEvaluationError: Re-scoring run 'cold_ch…
 ```
 
 Three things in that output are the design working:

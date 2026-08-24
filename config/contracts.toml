@@ -1,7 +1,9 @@
 # Data contracts and synthetic-data realism.
 #
-# Read by `aegis_ml.data.contract_check`, `aegis_ml.data.latent` and
-# `aegis_ml.features.leakage`. This file is where "is the data honest?" is decided.
+# Loaded by `aegis_ml.config` into `aegis_ml.settings.Settings`, beneath the environment:
+#   AEGIS_ML_* env var  >  this file  >  the field default in settings.py
+# `aegis-ml doctor` prints any key here that no setting consumes, so a value that does
+# nothing says so rather than looking like it works.
 
 [realism]
 # THE MOST IMPORTANT SETTING IN THIS REPO.
@@ -17,7 +19,7 @@
 target_r2 = 0.65                 # regression: aim here
 r2_band = [0.45, 0.80]           # regression: acceptable band
 target_accuracy = 0.78           # classification: aim here
-accuracy_band = [0.65, 0.88]     # classification: acceptable band
+accuracy_band = [0.62, 0.92]     # classification: acceptable band
 
 # Above this, assume leakage or a trivially-recoverable target and say so loudly.
 # A held-out R^2 of 0.99 on synthetic data is a bug report, not an achievement.

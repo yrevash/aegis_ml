@@ -427,12 +427,31 @@ def doctor(
         _echo("  postgres         no DSN configured (AEGIS_ML_POSTGRES_DSN unset)")
 
     _echo()
+    _echo("── config files " + "─" * 63)
+    from aegis_ml.config import CONFIG_DIR, load_config_overrides, unknown_keys
+
+    overrides = load_config_overrides()
+    if CONFIG_DIR.is_dir():
+        _echo(f"  config dir       {CONFIG_DIR}")
+        _echo(f"  applied          {len(overrides)} setting(s) loaded from config/*.toml")
+    else:
+        _echo(f"  config dir       {CONFIG_DIR} (absent — field defaults in use)")
+    stray = unknown_keys()
+    if stray:
+        _echo(
+            f"  NOT CONSUMED     {len(stray)} key(s) no setting reads — "
+            f"editing them does nothing:"
+        )
+        for key in stray:
+            _echo(f"                     {key}")
+    _echo()
     _echo("── data realism " + "─" * 63)
     selected_domain = domain_id
     if selected_domain is None and problem is not None:
         selected_domain = _load_problem(problem, None).domain_id
     message, inside = _realism_check(selected_domain)
-    from aegis_ml.pipelines.flows import REALISM_ACCURACY_BAND, REALISM_R2_BAND
+    REALISM_R2_BAND = settings.realism_r2_band
+    REALISM_ACCURACY_BAND = settings.realism_accuracy_band
 
     _echo(
         f"  bands            regression R² {REALISM_R2_BAND}, "

@@ -8,6 +8,7 @@ expensive stage starts — ``aegis-ml doctor`` prints them.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -55,12 +56,47 @@ class Settings(BaseSettings):
     promote_min_gain: float = 0.005
     learnable_r2_floor: float = 0.15
     learnable_accuracy_floor: float = 0.55
+    # The band a *realistic* frame lands in. Both ends matter: below the floor the target
+    # is closer to noise than signal, and above the ceiling the latent function was sampled
+    # with too little noise, so every downstream number describes a world that does not
+    # exist. Defaults match aegis_ml.pipelines.flows.REALISM_*_BAND, which is what doctor,
+    # data_flow and the charts read.
+    realism_r2_band: tuple[float, float] = (0.45, 0.80)
+    realism_accuracy_band: tuple[float, float] = (0.62, 0.92)
+    suspiciously_easy_r2: float = 0.95
+    suspiciously_easy_accuracy: float = 0.98
     leakage_threshold: float = 0.98
 
     drift_share_warn: float = 0.2
     drift_share_block: float = 0.4
 
     postgres_dsn: str | None = None
+
+    @classmethod
+    def settings_customise_sources(  # noqa: PLR0913 - the signature is pydantic-settings'
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: Any,  # noqa: ANN401 - pydantic-settings source callables
+        env_settings: Any,  # noqa: ANN401
+        dotenv_settings: Any,  # noqa: ANN401
+        file_secret_settings: Any,  # noqa: ANN401
+    ) -> tuple[Any, ...]:
+        """Layer ``config/*.toml`` beneath the environment.
+
+        Precedence, highest first: explicit constructor arguments, ``AEGIS_ML_*`` environment
+        variables, ``.env``, then ``config/*.toml``, then the field defaults above.
+
+        The TOML layer sits *below* the environment on purpose: a one-off override
+        (``AEGIS_ML_AUTOML_TIME_BUDGET=30 aegis-ml train ...``) must never require editing a
+        file that is under version control, and must never leave that file silently changed
+        for the next run.
+        """
+        from aegis_ml.config import load_config_overrides
+
+        def _toml_source() -> dict[str, Any]:
+            return load_config_overrides()
+
+        return (init_settings, env_settings, dotenv_settings, _toml_source, file_secret_settings)
 
     @property
     def artifact_path(self) -> Path:

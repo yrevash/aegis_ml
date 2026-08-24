@@ -100,6 +100,12 @@ provides. The right-hand panel exists so that the gap is visible rather than ass
 The chart even says so in its own annotation: *"The marginal figure above is an average over
 these segments, so it can stay inside tolerance while one of them does not."*
 
+**And note what this means for the gate.** Promotion criterion 2 reads the *marginal* number —
+91.40 % against a floor of 85 % — so it passes. The dotted line on the right-hand panel is that
+same floor drawn per segment, for the reader's benefit; the gate does not evaluate it. This
+segment shortfall is a finding the chart surfaces and the gate does **not** catch. Criterion 4
+protects segments in the *metric* (chart 05), not in coverage.
+
 ---
 
 ## 04 · Global SHAP

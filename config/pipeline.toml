@@ -1,7 +1,8 @@
 # Pipeline execution.
 #
-# Read by `aegis_ml.pipelines.flows`. Prefect is OPTIONAL by design: flows are ordinary
-# Python functions and a trained artifact must never depend on a server being up.
+# Loaded by `aegis_ml.config` into `aegis_ml.settings.Settings`, beneath the environment:
+#   AEGIS_ML_* env var  >  this file  >  the field default in settings.py
+# `aegis-ml doctor` prints any key here that no setting consumes.
 
 [run]
 cache = true            # skip a stage whose content-addressed inputs are unchanged
