@@ -18,6 +18,43 @@ What it extends: AutoML across four tiers, generated data contracts, a filesyste
 
 ---
 
+## The dashboard
+
+One command brings up a hub over the registry plus two best-in-class UIs pointed at data this
+package already writes — MLflow at the registry mirror, Optuna Dashboard at the study SQLite
+we persist for resumability. Everything runs locally and the page makes **zero external
+network requests**, so it works offline.
+
+```bash
+aegis-ml dashboard          # hub :8000 · MLflow :5000 · Optuna :8080, then opens a browser
+```
+
+![The hub overview — the verdict above the fold](docs/images/dashboard/01-hub-overview.png)
+
+The headline numbers are read from the run's own artifacts: the primary metric, the coverage
+level **requested** beside the one **measured**, the gate outcome, the drift verdict, and which
+run is currently serving. Below them the gate's five criteria appear verbatim, in the gate's own
+words, rather than as a summarised PASS.
+
+![A run detail — nine figures, artifacts, gate reasoning and the leaderboard](docs/images/dashboard/02-run-detail.png)
+
+Each run's page carries its nine figures with captions, direct links to the model card, SHAP,
+data profile and drift reports, and the full leaderboard including the candidates that lost.
+
+<details>
+<summary><b>MLflow and Optuna Dashboard, embedded</b></summary>
+
+![MLflow UI](docs/images/dashboard/04-mlflow.png)
+![Optuna Dashboard](docs/images/dashboard/05-optuna.png)
+
+Both degrade honestly: if a package is missing or a port is taken, the panel says so with the
+command that fixes it rather than showing a live indicator over a blank frame. That failure was
+real — macOS AirPlay squats on port 5000, and an early version reported it as "already running".
+
+</details>
+
+---
+
 ## What a run produces
 
 Every figure below is a real chart from one real run — `cold_chain_logistics-20260824T030131425-34e3f5`, produced by `scripts/run_demo.py` on the worked reference domain. The same nine PNGs, plus a self-contained `index.html`, are written to `registry_store/runs/<run_id>/visuals/` for every registered run. Numbers in the captions are read off the charts and off that run's artifacts.
