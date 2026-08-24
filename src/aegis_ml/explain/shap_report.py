@@ -22,11 +22,16 @@ better:
   available evidence that the model is not chasing noise — dropping those rows would remove
   the finding and leave a report that looks equally good for an honest model and an
   overfitted one.
-* **The explainer is model-agnostic on purpose.** ``TreeExplainer`` is faster, but it cannot
-  see through the encoding pipeline the estimator is wrapped in, and attributions computed on
-  one-hot columns cannot be summed back to the original feature without an assumption. The
-  permutation explainer runs against the fitted pipeline's own ``predict`` on the raw frame,
-  so every attribution is stated in terms of the columns the domain spec actually declares.
+* **The explainer is model-agnostic on purpose, and that is now a choice rather than a
+  limit.** Algorithm selection lives in :mod:`aegis_ml.explain.explainers`, which routes tree
+  models to ``TreeExplainer``, linear models to ``LinearExplainer`` and everything else to
+  ``PermutationExplainer`` — so *any* fitted estimator can be reported on here, not only the
+  tree learners. This module hands that dispatch a wrapped ``predict`` over the raw declared
+  columns rather than the bare estimator, which pins it to the permutation branch by
+  construction. That is deliberate: ``TreeExplainer`` is far faster, but it cannot see
+  through the encoding pipeline the estimator is wrapped in, and attributions computed on
+  one-hot columns cannot be summed back to the original feature without an assumption. Every
+  attribution here is stated in terms of the columns the domain spec actually declares.
 
 ``shap`` is an optional dependency, imported through
 :func:`aegis_ml._require.require` so an absent install raises with the exact command that
@@ -39,10 +44,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from aegis_ml._require import require
-from aegis_ml.contracts.errors import AegisMLError
 from aegis_ml.contracts.spec import MLProblem
 from aegis_ml.explain.card import escape, html_page, svg_bar_chart
+from aegis_ml.explain.explainers import ExplainerUnavailableError, build_explainer
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Mapping, Sequence
@@ -55,25 +59,6 @@ __all__ = [
     "local_explanation",
     "render_html",
 ]
-
-
-class ExplainerUnavailableError(AegisMLError):
-    """The model cannot be explained in the form this module requires.
-
-    Raised instead of falling back to a cruder attribution (feature permutation on the
-    metric, say, or coefficient magnitudes). Those answer a different question, and a report
-    that silently swapped one for the other would attribute a prediction to the wrong cause
-    while looking identical.
-    """
-
-    def __init__(self, reason: str) -> None:
-        """Name what was missing and what the caller can do about it."""
-        super().__init__(
-            f"Cannot compute SHAP attributions: {reason}. Nothing here substitutes a "
-            f"different notion of importance on your behalf — permutation importance and "
-            f"SHAP answer different questions, and a report that quietly swapped them would "
-            f"attribute a prediction to the wrong cause with no visible symptom."
-        )
 
 
 class _FrameCodec:
@@ -264,8 +249,6 @@ def _explanation(
     Raises:
         ExplainerUnavailableError: When the frame is empty or lacks the declared features.
     """
-    shap = require("aegis-ml[serve]", "shap")
-
     missing = [name for name in problem.feature_names if name not in frame.columns]
     if missing:
         raise ExplainerUnavailableError(
@@ -283,9 +266,8 @@ def _explanation(
 
     codec = _FrameCodec(features, problem)
     predict = _predict_function(model, problem, codec)
-    masker = shap.maskers.Independent(codec.encode(background), max_samples=n_background)
-    explainer = shap.Explainer(
-        predict, masker, algorithm="permutation", feature_names=list(problem.feature_names)
+    explainer, _kind = build_explainer(
+        predict, codec.encode(background), feature_names=list(problem.feature_names)
     )
     per_round = 2 * len(problem.feature_names) + 1
     return explainer(
@@ -447,15 +429,13 @@ def local_explanation(
     # The row is explained directly rather than through `_explanation`, which samples: the
     # caller asked about THIS row, and an attribution computed for a row that merely
     # resembles it would be presented as if it were the same answer.
-    shap = require("aegis-ml[serve]", "shap")
     sampled = reference.sample(
         n=max(1, min(background_samples, len(reference))), random_state=seed
     )
     codec = _FrameCodec(reference, problem)
     predict = _predict_function(model, problem, codec)
-    masker = shap.maskers.Independent(codec.encode(sampled), max_samples=len(sampled))
-    explainer = shap.Explainer(
-        predict, masker, algorithm="permutation", feature_names=list(problem.feature_names)
+    explainer, _kind = build_explainer(
+        predict, codec.encode(sampled), feature_names=list(problem.feature_names)
     )
     per_round = 2 * len(problem.feature_names) + 1
     explanation = explainer(

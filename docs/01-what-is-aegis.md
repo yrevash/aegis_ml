@@ -139,7 +139,7 @@ This is the most important section in this document. Aegis is not a thin shell. 
 |---|---|
 | Ensemble | XGBoost + HistGradientBoosting **soft-voting**; `_regression_members()` / `_classification_members()` |
 | Uncertainty | **MAPIE split-conformal**, calibrated on a **disjoint** calibration split |
-| Explanation | **SHAP TreeExplainer**, averaged across members by voting weight, with `value_label` carrying the categorical level name so a UI can render `region = emea` and not `region = 1.0` |
+| Explanation | **SHAP**, dispatched per member family (`TreeExplainer` for trees, `LinearExplainer` for linear, `PermutationExplainer` otherwise), averaged across members by voting weight, with `value_label` carrying the categorical level name so a UI can render `region = emea` and not `region = 1.0` |
 | Honesty | `ModelCard` separates **requested** coverage (`conformal_coverage`) from **measured** coverage (`conformal_coverage_empirical`). Never one field. |
 | Provenance | SHA-256 `dataset_digest` (`'sha256:<hex>'`), invariant to column order and index, sensitive to any cell value, row order, dtype or added/removed column |
 | Refusal | `MLModelUnavailableError` instead of silently training on the noise synthesiser and serving it as domain evidence |

@@ -283,7 +283,17 @@ members = to_aegis_members(recipe, random_state=7)   # list[tuple[str, Estimator
 | `ExtraTreesRegressor` / `Classifier` | `sklearn.ensemble` |
 | `LGBMRegressor` / `LGBMClassifier` | `lightgbm` |
 
-**Every entry is a tree learner `shap.TreeExplainer` supports**, because the Aegis spine explains its ensemble member-by-member with exactly that explainer. Adding a non-tree member here would produce a model that trains, scores, promotes — and then raises inside `explain()` on the first request that asks why.
+**Entries are tree *and* linear learners.** The spine explains member-by-member, dispatching
+per family — `TreeExplainer` for trees (exact, no background), `LinearExplainer` for linear
+models, `PermutationExplainer` for anything else — so "can this be explained?" no longer
+decides "can this be promoted?".
+
+This was not always true, and the old behaviour is worth knowing: the allowlist was
+tree-only, so a ridge regression that scored **0.7460 — the best score in a real run** — was
+refused promotion and a model scoring 0.7379 was promoted instead. A tooling limitation was
+choosing the winner. Linear members carry `SimpleImputer(median) → StandardScaler` in front
+of the estimator, because unlike the tree learners they have no native NaN path and the data
+deliberately carries ~4% missingness.
 
 Anything else raises `RecipeNotPortableError`, whose message says what to do instead: *report its leaderboard score as the accuracy ceiling and export it to ONNX for a side-by-side predictor — do not promote it as the spine.*
 

@@ -33,6 +33,13 @@ from aegis_ml.explain.card import (
     render_html,
     render_markdown,
 )
+from aegis_ml.explain.explainers import (
+    ExplainerKind,
+    ExplainerUnavailableError,
+    build_explainer,
+    model_family,
+    shap_values,
+)
 from aegis_ml.explain.pdp import (
     PartialDependenceUnavailableError,
     PDPCurve,
@@ -45,7 +52,6 @@ from aegis_ml.explain.reason_codes import (
     emit_describe_prediction_source,
 )
 from aegis_ml.explain.shap_report import (
-    ExplainerUnavailableError,
     global_importance,
     local_explanation,
 )
@@ -54,20 +60,24 @@ from aegis_ml.explain.shap_report import render_html as render_shap_html
 __all__ = [
     "TABPFN_LICENSE_NOTICE",
     "CoverageBlock",
+    "ExplainerKind",
     "ExplainerUnavailableError",
     "ExtendedModelCard",
     "PDPCurve",
     "PartialDependenceUnavailableError",
     "build_card",
+    "build_explainer",
     "build_reason_codes",
     "describe_prediction_text",
     "emit_describe_prediction_source",
     "global_importance",
     "local_explanation",
     "measure_missingness",
+    "model_family",
     "partial_dependence_curves",
     "render_html",
     "render_markdown",
     "render_pdp_html",
     "render_shap_html",
+    "shap_values",
 ]

@@ -181,9 +181,13 @@ presented as the model's score.
 trained on its own — scored 0.7211, so the search bought about **+0.017 R²** over the status
 quo. Small, real, and stated.
 
-The hatched top bar `ridge_reference` at **0.746** is the highest score in the run and was not
-promoted: it is a linear model and Aegis's SHAP explainer handles trees only. It is reported as
-the accuracy ceiling. `autogluon` and `tabpfn` do not appear at all because the run used the
+The hatched top bar `ridge_reference` at **0.746** is the highest score in this run and was not
+promoted — because when these charts were generated the SHAP explainer handled trees only, so a
+linear model could not be explained and therefore could not be promoted. That has since been
+fixed (SHAP dispatches per family; linear models are portable), so on a fresh run this bar is no
+longer hatched. Hatching now marks only what genuinely cannot be re-fitted in the serving venv:
+an AutoGluon stacked ensemble, a TabPFN model. Those are reported as the accuracy ceiling and
+served through the trainer-venv bridge. `autogluon` and `tabpfn` do not appear at all because the run used the
 serving venv; both are listed in `tiers_skipped` with the exact install command.
 
 ---

@@ -20,14 +20,32 @@ score is reported as an accuracy ceiling instead.
 ``aegis.ml.model._regression_members()`` returns (``aegis/src/aegis/ml/model.py``). Matching
 it means the Aegis spine can be handed an AutoML-tuned ensemble as a drop-in substitution
 and keeps everything that makes it trustworthy: MAPIE split-conformal calibration on a
-disjoint split, SHAP TreeExplainer attribution averaged by member weight, the SHA-256
-dataset digest, and the ModelCard. Full AutoML benefit, zero changes inside ``aegis/``.
+disjoint split, per-member SHAP attribution averaged by member weight, the SHA-256 dataset
+digest, and the ModelCard. Full AutoML benefit, zero changes inside ``aegis/``.
 
-**Why every member must be a tree model.** The spine explains itself with
-``shap.TreeExplainer``, which supports XGBoost, LightGBM and sklearn's forest/histogram
-learners and nothing else. A linear or kNN member would fit and score perfectly well and
-then make ``explain()`` raise at request time, which is the wrong place to discover it.
-The allowlist is tree-only for that reason, not by accident.
+**Why the allowlist is no longer tree-only.** It used to be, and the reason given was that
+the spine explains itself with ``shap.TreeExplainer``, which supports tree models and
+nothing else. That reason described a limit of the *tooling*, and it was deciding a
+*modelling* question: in a measured run the linear reference scored ``r2=0.7460`` — the best
+score on the board — and was refused promotion in favour of a model that scored 0.7379,
+purely because the explainer could not explain it. Discarding the best model to protect a
+tool is backwards, so the tool was fixed instead. ``aegis.ml.model._explainers`` now
+dispatches per member (``TreeExplainer`` for trees, ``LinearExplainer`` for linear members,
+``PermutationExplainer`` otherwise), mirroring :mod:`aegis_ml.explain.explainers`, and this
+allowlist admits the linear learners that dispatch can now explain.
+
+**What did not change is the reason a member must still be allowlisted.** A recipe is data
+from another process, ``getattr(import_module(mod), kind)`` on a name that arrived as data
+is an arbitrary-import primitive, and the serving venv must be able to construct what the
+trainer venv chose. Both still hold — the allowlist grew, it did not stop being one.
+
+**Why linear members are wrapped in an imputing pipeline.** This is a genuinely separate
+constraint from explainability, and it survived the fix intact: the frames this package
+searches over carry MAR missingness on purpose, tree learners have a native NaN path, and
+scikit-learn's linear models have none — they raise on the first null at request time.
+So :func:`build_estimator` never hands the spine a bare ``RidgeCV``; it hands it
+``Pipeline(SimpleImputer(median) → StandardScaler → estimator)``, which is what makes
+"portable" an honest claim rather than a deferred crash. See :data:`LINEAR_KINDS`.
 """
 
 from __future__ import annotations
@@ -50,6 +68,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, keeps the module import lig
 __all__ = [
     "HGB_PARAMS",
     "KIND_EXTRAS",
+    "LINEAR_KINDS",
+    "LINEAR_PARAMS",
     "PORTABLE_KINDS",
     "XGB_PARAMS",
     "assert_portable",
@@ -85,18 +105,89 @@ PORTABLE_KINDS: dict[str, str] = {
     # search is allowed to select it.
     "LGBMRegressor": "lightgbm",
     "LGBMClassifier": "lightgbm",
+    # sklearn.linear_model — admitted once the spine's explainer stopped being tree-only.
+    # Every one of these is explained exactly (not approximately) by shap.LinearExplainer,
+    # and every one of them is wrapped by :func:`_build_one` in the imputing pipeline that
+    # :data:`LINEAR_KINDS` documents.
+    "Ridge": "sklearn.linear_model",
+    "RidgeCV": "sklearn.linear_model",
+    "LinearRegression": "sklearn.linear_model",
+    "ElasticNet": "sklearn.linear_model",
+    "ElasticNetCV": "sklearn.linear_model",
+    "Lasso": "sklearn.linear_model",
+    "LassoCV": "sklearn.linear_model",
+    "SGDRegressor": "sklearn.linear_model",
+    "LogisticRegression": "sklearn.linear_model",
+    "LogisticRegressionCV": "sklearn.linear_model",
+    "SGDClassifier": "sklearn.linear_model",
 }
 """Estimator class name → the module it may be imported from. The whole allowlist.
 
-Every entry is a tree learner ``shap.TreeExplainer`` supports, because the Aegis spine
-explains its ensemble member-by-member with exactly that explainer. Adding a non-tree
-member here would produce a model that trains, scores, promotes — and then raises inside
-``explain()`` on the first request that asks why.
+Two families, admitted for two different reasons.
+
+**Tree learners** — XGBoost, LightGBM, and sklearn's histogram/forest boosters — are
+explained exactly by ``shap.TreeExplainer`` in milliseconds, with no reference data needed.
+
+**Linear learners** are explained exactly by ``shap.LinearExplainer`` against a background
+distribution. They were excluded until the spine's explainer dispatch was fixed, and that
+exclusion cost a measured 0.008 r2 — the linear reference was the best model
+on the board and was refused promotion. Nothing about the tree path changed when they were
+added; see this module's docstring.
+
+What is still refused is everything *not* here: a class name that arrived as data is never
+imported on trust, and an AutoGluon ``WeightedEnsembleModel`` imports fine in the trainer
+venv and is meaningless in the serving one.
+"""
+
+LINEAR_KINDS: frozenset[str] = frozenset(
+    {
+        "Ridge",
+        "RidgeCV",
+        "LinearRegression",
+        "ElasticNet",
+        "ElasticNetCV",
+        "Lasso",
+        "LassoCV",
+        "SGDRegressor",
+        "LogisticRegression",
+        "LogisticRegressionCV",
+        "SGDClassifier",
+    }
+)
+"""Allowlisted kinds that need an imputing, scaling pipeline wrapped around them.
+
+**Imputation is not optional here.** The frames this package searches over carry ~4% MAR
+missingness by design. XGBoost and HistGradientBoosting route a NaN down a learned default
+branch; ``RidgeCV.predict`` raises ``ValueError: Input contains NaN``. A linear member
+marked portable without imputation would train, score, promote, and then fail on the first
+live request whose payload happened to omit a field — which is a worse outcome than not
+promoting it at all, and exactly the failure mode the ``portable`` flag exists to prevent.
+
+**Scaling is not optional either**, for a narrower reason: ``Ridge``/``Lasso``/``ElasticNet``
+penalise coefficients on their raw scale, so without standardisation the regularisation
+strength a search tuned means something different per column. It is also free with respect
+to attribution — an affine per-column transform leaves ``coef_j · (x_j − E[x_j])``
+unchanged — so the SHAP values still name the caller's own columns.
+
+The median (not the mean) is the imputation statistic, matching
+``aegis.ml.model.TrustworthyModel.feature_medians``, so a value imputed during the search
+and a value imputed at request time are the same value.
+"""
+
+LINEAR_PARAMS: dict[str, Any] = {"max_iter": 2000}
+"""Constructor kwargs applied to iterative linear learners that accept them.
+
+Only ``max_iter``, and only where the signature has it: scikit-learn's default of 100 for
+``LogisticRegression`` does not converge on a standardised, one-hot-encoded frame of this
+width, and a non-converged fit is scored on the leaderboard as though it were the model's
+real accuracy. :func:`coerce_params` drops the key for classes that do not accept it
+(``LinearRegression``, ``RidgeCV``), so nothing is passed where it would raise.
 """
 
 KIND_EXTRAS: dict[str, str] = {
     "xgboost": "aegis-ml[serve]",
     "sklearn.ensemble": "aegis-ml[serve]",
+    "sklearn.linear_model": "aegis-ml[serve]",
     "lightgbm": "aegis-ml[strong]",
 }
 """Module → the install target that provides it, for the error message's remedy line."""
@@ -139,7 +230,7 @@ def kind_for(family: str, task: str) -> str:
 
     Args:
         family: One of ``xgboost``, ``hist_gbm``, ``random_forest``, ``extra_trees``,
-            ``lightgbm``.
+            ``lightgbm``, ``linear``.
         task: ``"regression"`` or ``"classification"``.
 
     Returns:
@@ -148,6 +239,11 @@ def kind_for(family: str, task: str) -> str:
     Raises:
         RecipeNotPortableError: If the family has no portable estimator.
     """
+    if family == "linear":
+        # The linear family breaks the stem+suffix pattern the tree families follow:
+        # scikit-learn spells its two task variants `RidgeCV` and `LogisticRegression`,
+        # which share no stem at all. Naming them explicitly is the whole special case.
+        return "LogisticRegression" if task == "classification" else "RidgeCV"
     suffix = _CLASSIFICATION_SUFFIX if task == "classification" else _REGRESSION_SUFFIX
     stems = {
         "xgboost": "XGB",
@@ -162,8 +258,34 @@ def kind_for(family: str, task: str) -> str:
     return f"{stem}{suffix}"
 
 
+_LINEAR_TASKS: dict[str, str] = {
+    "Ridge": "regression",
+    "RidgeCV": "regression",
+    "LinearRegression": "regression",
+    "ElasticNet": "regression",
+    "ElasticNetCV": "regression",
+    "Lasso": "regression",
+    "LassoCV": "regression",
+    "SGDRegressor": "regression",
+    "LogisticRegression": "classification",
+    "LogisticRegressionCV": "classification",
+    "SGDClassifier": "classification",
+}
+"""Linear kind → its task, stated because the class names do not encode it.
+
+``XGBClassifier`` announces its task in its name and the suffix rule below reads it off.
+``LogisticRegression`` and ``LinearRegression`` both end in ``"Regression"`` while being a
+classifier and a regressor respectively — reading the suffix would let a logistic model into
+a regression recipe, where it would fit on a continuous target and produce a leaderboard row
+for a model that cannot serve the problem.
+"""
+
+
 def _task_of_kind(kind: str) -> str | None:
     """Return the task a kind is valid for, or ``None`` if the name says nothing."""
+    linear = _LINEAR_TASKS.get(kind)
+    if linear is not None:
+        return linear
     if kind.endswith(_CLASSIFICATION_SUFFIX):
         return "classification"
     if kind.endswith(_REGRESSION_SUFFIX):
@@ -372,8 +494,40 @@ def _accepted_param_names(cls: type) -> set[str] | None:
     return names
 
 
+def linear_pipeline(estimator: Any) -> Pipeline:  # noqa: ANN401 - any linear estimator
+    """Wrap a linear estimator in the imputation and scaling it cannot serve without.
+
+    See :data:`LINEAR_KINDS` for why both steps are mandatory rather than tuning choices.
+    The step names (``impute``, ``scale``, ``model``) are part of the contract: the SHAP
+    dispatch in :mod:`aegis_ml.explain.explainers` and in ``aegis.ml.model`` unwraps the
+    final step to explain it, and both check that the prefix preserves the column count
+    before doing so — which this prefix does, one column in, one column out.
+
+    Args:
+        estimator: A constructed, unfitted linear estimator.
+
+    Returns:
+        An unfitted ``Pipeline`` that accepts NaN and returns predictions.
+    """
+    impute = require("aegis-ml[serve]", "sklearn.impute")
+    preprocessing = require("aegis-ml[serve]", "sklearn.preprocessing")
+    pipeline = require("aegis-ml[serve]", "sklearn.pipeline")
+    return pipeline.Pipeline(
+        steps=[
+            ("impute", impute.SimpleImputer(strategy="median")),
+            ("scale", preprocessing.StandardScaler()),
+            ("model", estimator),
+        ]
+    )
+
+
 def _build_one(member: RecipeMember, task: str, random_state: int) -> Any:  # noqa: ANN401
-    """Construct one fitted-ready estimator from a recipe member."""
+    """Construct one fitted-ready estimator from a recipe member.
+
+    Linear members come back wrapped in :func:`linear_pipeline` rather than bare, because a
+    bare one cannot survive a request whose payload omits a field. Everything else is
+    returned as constructed.
+    """
     cls = estimator_class(member.kind, task=task)
     params, _dropped = coerce_params(member.kind, dict(member.params))
     accepted = _accepted_param_names(cls)
@@ -384,7 +538,16 @@ def _build_one(member: RecipeMember, task: str, random_state: int) -> Any:  # no
         # XGBoost picks one per-version, which makes two runs of "the same" recipe
         # non-comparable across an xgboost upgrade.
         params["eval_metric"] = "logloss"
-    return cls(**params)
+    if member.kind == "SGDClassifier" and "loss" not in params:
+        # sklearn's default `hinge` has no predict_proba, and the spine soft-votes and
+        # then conformalises class *scores* — a hard-margin member gives MAPIE nothing
+        # continuous to threshold and its prediction sets degenerate. `log_loss` is the
+        # only SGD classification loss that keeps the trust story intact.
+        params["loss"] = "log_loss"
+    estimator = cls(**params)
+    if member.kind in LINEAR_KINDS:
+        return linear_pipeline(estimator)
+    return estimator
 
 
 def to_aegis_members(recipe: Recipe, *, random_state: int) -> list[tuple[str, Any]]:

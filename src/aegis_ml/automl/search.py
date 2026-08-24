@@ -47,6 +47,7 @@ from typing import TYPE_CHECKING, Any
 from aegis_ml._require import require
 from aegis_ml.automl import tiers as tiers_mod
 from aegis_ml.automl.recipe import (
+    LINEAR_PARAMS,
     baseline_recipe,
     build_estimator,
     coerce_params,
@@ -363,12 +364,17 @@ def _fit_and_score(
 
 
 def _portable_families(task: str) -> list[str]:
-    """Return the learner families that are BOTH allowlisted and importable here.
+    """Return the tree learner families that are BOTH allowlisted and importable here.
 
     Availability is checked per family rather than assumed, because the two venvs differ:
     the trainer venv has LightGBM, the backend venv may not, and a search that marks a
     LightGBM candidate portable in the trainer venv hands back a recipe the serving venv
     cannot construct — which is precisely the failure the recipe allowlist exists to stop.
+
+    The ``linear`` family is portable too (see :func:`_linear_reference`) and is absent from
+    this list on purpose: it already gets its own named leaderboard row, and listing it here
+    would emit a second, identical row under a different name. Two identical rows on a
+    leaderboard read as corroboration rather than as the duplicate they are.
     """
     families = ["xgboost", "hist_gbm", "random_forest", "extra_trees", "lightgbm"]
     return [f for f in families if is_portable_kind(kind_for(f, task), task=task)]
@@ -437,33 +443,38 @@ def _baseline_configs(ctx: _Context) -> list[tuple[str, list[RecipeMember]]]:
     return configs
 
 
-def _linear_reference(ctx: _Context) -> tuple[Any, str]:  # noqa: ANN401
-    """Return the linear reference model and its name.
+def _linear_reference(ctx: _Context) -> tuple[RecipeMember, str]:
+    """Return the linear reference member and its leaderboard name.
 
-    It exists to give the leaderboard a floor with a *shape* — how much of this target is
-    linear in the encoded features — and it is deliberately marked non-portable. Not
-    because the serving venv cannot fit a ridge, but because the Aegis spine explains its
-    ensemble with ``shap.TreeExplainer``, which supports tree models only. Promoting a
-    linear member would produce a model that trains and scores and then raises inside
-    ``explain()`` on the first request that asks why.
+    It gives the leaderboard a floor with a *shape* — how much of this target is linear in
+    the encoded features — and, since the SHAP dispatch was fixed, it is a **promotable
+    candidate** rather than a diagnostic that could only ever lose.
 
-    Imputation is explicit here: the frames this searches over carry MAR missingness, and
-    unlike the tree learners a linear model has no native NaN path.
+    It used to be marked non-portable, and the stated reason was that the Aegis spine
+    explained its ensemble with ``shap.TreeExplainer``, which supports tree models only. That
+    was true of the tooling and false as a modelling rule, and the cost was measurable: in a
+    real run this candidate scored ``r2=0.7460``, the best score on the whole board, and was
+    passed over for ``flaml_xgb_limitdepth`` at 0.7379. Discarding the best model because a
+    tool could not describe it is backwards. ``aegis.ml.model._explainers`` now dispatches per
+    member — ``TreeExplainer`` for trees, ``LinearExplainer`` for linear members,
+    ``PermutationExplainer`` for anything else — so a promoted ridge is explained exactly, in
+    closed form, and ``explain()`` answers rather than raises.
+
+    **The NaN constraint is separate and still holds.** The frames this searches over carry
+    MAR missingness on purpose and scikit-learn's linear models have no native NaN path, so
+    the member is built through :func:`~aegis_ml.automl.recipe.linear_pipeline`, which puts
+    ``SimpleImputer(strategy="median")`` and ``StandardScaler`` in front of the estimator.
+    That wrapping is applied by ``recipe._build_one``, which means it is applied identically
+    here and in the serving venv when the recipe is re-fitted — the thing that makes
+    ``portable=True`` an honest claim instead of a deferred crash.
+
+    Returns:
+        ``(member, name)`` — the recipe member and the name its leaderboard row carries.
     """
-    impute = require("aegis-ml[serve]", "sklearn.impute")
-    pipeline = require("aegis-ml[serve]", "sklearn.pipeline")
-    preprocessing = require("aegis-ml[serve]", "sklearn.preprocessing")
-    linear = require("aegis-ml[serve]", "sklearn.linear_model")
-
-    steps: list[tuple[str, Any]] = [
-        ("impute", impute.SimpleImputer(strategy="median")),
-        ("scale", preprocessing.StandardScaler()),
-    ]
-    if ctx.task == "classification":
-        steps.append(("model", linear.LogisticRegression(max_iter=2000)))
-        return pipeline.Pipeline(steps), "logistic_reference"
-    steps.append(("model", linear.RidgeCV()))
-    return pipeline.Pipeline(steps), "ridge_reference"
+    kind = kind_for("linear", ctx.task)
+    name = "logistic_reference" if ctx.task == "classification" else "ridge_reference"
+    kept, _dropped = coerce_params(kind, dict(LINEAR_PARAMS))
+    return RecipeMember(name="linear", kind=kind, params=kept), name
 
 
 def _search_baseline(ctx: _Context) -> tuple[list[_Scored], dict[str, str]]:
@@ -505,10 +516,10 @@ def _search_baseline(ctx: _Context) -> tuple[list[_Scored], dict[str, str]]:
             )
         )
 
-    model, name = _linear_reference(ctx)
+    member, name = _linear_reference(ctx)
     try:
-        value, fit_seconds = _fit_and_score(ctx, model)
-    except Exception as exc:  # audit-ok: the reference is diagnostic, never the winner
+        value, fit_seconds = _fit_and_score(ctx, _estimator_for([member], ctx))
+    except Exception as exc:  # audit-ok: one config failing must not lose the others
         failures[f"baseline:{name}"] = f"{type(exc).__name__}: {exc}"
     else:
         scored.append(
@@ -519,18 +530,34 @@ def _search_baseline(ctx: _Context) -> tuple[list[_Scored], dict[str, str]]:
                     metric_name=ctx.metric,
                     metric_value=value,
                     fit_seconds=fit_seconds,
-                    portable=False,
+                    portable=True,
                     detail={
-                        "role": "reference floor — how much of this target is linear",
-                        "reason_not_portable": (
-                            "a linear model refits fine, but the Aegis spine explains its "
-                            "ensemble with shap.TreeExplainer, which supports tree models "
-                            "only — promoting this would train, score, and then raise "
-                            "inside explain() on the first request that asks why"
+                        "role": (
+                            "reference floor — how much of this target is linear — and, "
+                            "since the spine's SHAP dispatch stopped being tree-only, a "
+                            "candidate that is allowed to win it"
+                        ),
+                        "members": [member.kind],
+                        "explainer": "shap.LinearExplainer (exact, closed form)",
+                        "missing_data": (
+                            "imputed with the training median inside the member's own "
+                            "pipeline, because a linear estimator has no native NaN path "
+                            "and the serving frames carry MAR missingness"
                         ),
                     },
                 ),
-                recipe=None,
+                recipe=recipe_from_members(
+                    [member],
+                    ctx.problem,
+                    tier="baseline",
+                    search_seconds=fit_seconds,
+                    notes=[
+                        f"linear reference {name!r}, fitted on {len(ctx.y_train)} rows; the "
+                        f"member is wrapped in SimpleImputer(median) + StandardScaler by "
+                        f"recipe.linear_pipeline, in the search venv and the serving venv "
+                        f"alike"
+                    ],
+                ),
             )
         )
 
@@ -554,10 +581,21 @@ _FLAML_TO_FAMILY: dict[str, str] = {
 }
 """FLAML estimator id → portable learner family.
 
-FLAML also searches ``catboost``, ``lrl1`` and ``kneighbor``. They are absent from this map
-on purpose: none is a SHAP-TreeExplainer-compatible member of the Aegis spine, so a
-recipe naming one could not be explained after promotion. Their scores still reach the
-leaderboard — as non-portable rows.
+FLAML also searches ``catboost``, ``kneighbor`` and ``lrl1``/``lrl2``. They are absent from
+this map, and — since the spine's explainer dispatch stopped being tree-only — no longer
+because they cannot be explained. The reasons are now specific to each:
+
+* ``catboost`` is not installed in the serving venv and is not on the recipe allowlist, so
+  a recipe naming it could not be constructed there.
+* ``kneighbor`` has no constructor-kwarg description of a fitted kNN's *data*, which is the
+  model; rebuilding it from a config would rebuild a different neighbourhood.
+* ``lrl1``/``lrl2`` are ``LogisticRegression`` — which *is* now allowlisted — but FLAML
+  searches only ``{"C": ...}`` and fixes ``penalty``/``solver`` inside ``config2params``,
+  outside the config it reports. Rebuilding from ``best_config_per_estimator`` alone would
+  silently refit an L2 model in place of the L1 one FLAML actually scored, and the
+  leaderboard row would name a model that was never measured.
+
+Their scores still reach the leaderboard — as non-portable rows.
 """
 
 _FLAML_METRIC: dict[str, str] = {
@@ -935,10 +973,14 @@ def _ceiling_note(best: Candidate, chosen: Candidate, metric: str) -> str:
     """Describe, with both numbers and the reason, how much accuracy portability cost.
 
     The reason comes off the winning candidate rather than being asserted here, because the
-    two ways a candidate can be unpromotable are genuinely different: an AutoGluon stack
-    *cannot be rebuilt* in the serving venv, while the linear reference rebuilds fine and is
-    excluded because the spine cannot explain it. A note that gave both the same
-    explanation would be wrong half the time.
+    ways a candidate can be unpromotable are genuinely different: an AutoGluon stack *cannot
+    be rebuilt* in the serving venv, TabPFN has no constructor kwargs that describe it, and
+    a FLAML config may not carry the hyper-parameters the model was actually fitted with. A
+    note that gave all of them the same explanation would be wrong most of the time.
+
+    One reason that used to appear here no longer can: "the spine cannot explain it". The
+    linear reference was excluded on those grounds and it was the best model in the run;
+    the explainer dispatch was fixed instead, and linear candidates are now promotable.
     """
     gap = best.metric_value - chosen.metric_value
     reason = str(best.detail.get("reason_not_portable", "it is not a portable recipe"))

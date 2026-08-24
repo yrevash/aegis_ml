@@ -448,7 +448,7 @@ side-by-side predictor — do not promote it as the spine.
 
 **Working as designed.** The two-venv split is only sound because the winning configuration crosses as JSON and is re-fitted by the Aegis spine. A recipe naming an estimator the serving venv cannot construct breaks that guarantee, so it is refused rather than half-applied.
 
-`recipe.PORTABLE_KINDS` is an explicit allowlist of tree learners `shap.TreeExplainer` supports — XGBoost, HistGradientBoosting, RandomForest, ExtraTrees, LightGBM. Adding a non-tree member would produce a model that trains, scores, promotes, and then **raises inside `explain()` on the first request that asks why**.
+`recipe.PORTABLE_KINDS` is an explicit allowlist covering tree learners (XGBoost, HistGradientBoosting, RandomForest, ExtraTrees, LightGBM) **and linear ones** (Ridge/RidgeCV, LinearRegression, ElasticNet, Lasso, SGD, LogisticRegression). SHAP dispatches per family, so a linear member is explainable and promotable. What is still excluded is anything the *serving* venv cannot construct and re-fit — an AutoGluon stacked ensemble or a TabPFN model — and those are now servable through the trainer-venv bridge rather than discarded.
 
 **What to do:** promote the best *portable* recipe, quote the non-portable winner as the accuracy ceiling in the card, and export it to ONNX for a side-by-side (`aegis-ml export --onnx`). That is a better demo slide than pretending the ceiling does not exist.
 

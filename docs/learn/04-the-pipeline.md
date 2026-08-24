@@ -231,10 +231,16 @@ FLAML runs clean, and in the committed run the FLAML tier wins. Full analysis in
 
 ![The eleven candidates the search scored, hatched where not portable](../images/06_leaderboard.png)
 
-The committed run's best score was `ridge_reference` at **0.7460** — hatched, and *not*
-promoted. It is a linear model, and Aegis explains with `shap.TreeExplainer`, which handles
-trees only. Promoting it would train, score, and then raise inside `explain()` on the first
-request asking why.
+The committed charts were produced **before** the SHAP dispatch existed, and they record what
+it cost. The best score was `ridge_reference` at **0.7460** — hatched, and *not* promoted,
+because the spine explained models with `shap.TreeExplainer` only and a linear model would
+have raised inside `explain()` on the first request asking why. A model scoring 0.7379 was
+promoted in its place.
+
+**That is fixed**: SHAP now dispatches per family, linear estimators are portable, and a
+ridge that wins gets promoted. Re-run the demo and the hatching moves. The mechanism below is
+still exactly right — it just now applies to models that genuinely cannot cross into the
+serving venv, such as an AutoGluon stacked ensemble or a TabPFN model.
 
 So it is reported as the **accuracy ceiling**, in the recipe's own notes:
 

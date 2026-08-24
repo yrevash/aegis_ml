@@ -25,10 +25,12 @@ search function already enforces this; the worker adds nothing on top.
 
 from __future__ import annotations
 
+import inspect
 import json
 import sys
 import traceback
 from pathlib import Path
+from typing import Any
 
 from aegis_ml.automl.runner import (
     ERROR_FILENAME,
@@ -39,6 +41,7 @@ from aegis_ml.automl.runner import (
 )
 from aegis_ml.automl.search import run_search
 from aegis_ml.automl.tiers import TABPFN_LICENSE_NOTICE, tier_status
+from aegis_ml.contracts.errors import AegisMLError
 from aegis_ml.contracts.spec import MLProblem
 
 __all__ = ["main"]
@@ -47,6 +50,61 @@ __all__ = ["main"]
 def _log(message: str) -> None:
     """Write one line to stderr, which the parent streams live and retains a tail of."""
     print(message, file=sys.stderr, flush=True)
+
+
+def _strong_kwargs(run_id: str | None, expected_dir: str | None) -> dict[str, Any]:
+    """Return the ``run_id`` keyword for :func:`run_search`, or refuse if it cannot honour it.
+
+    Two refusals, both of which exist because their silent alternative produces a
+    leaderboard that still claims an accuracy ceiling with the model behind it deleted —
+    the exact flaw this argument was added to fix, quietly un-fixed.
+
+    The first is a capability check: if the installed
+    :func:`aegis_ml.automl.search.run_search` takes no ``run_id``, say so and name the
+    patch, rather than running a search whose strong winners go in the bin.
+
+    The second is a location check. The parent resolved where the strong model must land
+    and sent that absolute path along; this interpreter resolves it independently from
+    ``run_id``. They must agree. If they do not, the two processes disagree about where
+    the registry is, and a model written here would be invisible to the caller that asked
+    for it.
+
+    Args:
+        run_id: The run to persist non-portable winners into, or ``None`` when the caller
+            did not ask for persistence.
+        expected_dir: The absolute ``strong/`` path the parent resolved, for cross-check.
+
+    Returns:
+        ``{"run_id": ...}`` when persistence was asked for and is supported, else an empty
+        mapping — which reproduces the previous behaviour exactly.
+
+    Raises:
+        AegisMLError: If persistence was asked for and cannot be honoured faithfully.
+    """
+    if run_id is None:
+        return {}
+    if "run_id" not in inspect.signature(run_search).parameters:
+        raise AegisMLError(
+            f"The parent asked for run {run_id!r}'s strong model to be persisted, but "
+            f"aegis_ml.automl.search.run_search() in this trainer venv takes no `run_id` "
+            f"parameter, so an AutoGluon/TabPFN fit would be scored and then deleted as "
+            f"before. Apply the run_search(run_id=...) patch to "
+            f"src/aegis_ml/automl/search.py, or call run_in_trainer_venv() without "
+            f"run_id= to accept a search whose strong models are discarded."
+        )
+    if expected_dir is not None:
+        from aegis_ml.automl import strong  # noqa: PLC0415 - only this branch needs it
+
+        resolved = strong.strong_dir(run_id)
+        if Path(expected_dir).resolve() != resolved.resolve():
+            raise AegisMLError(
+                f"The trainer venv resolves run {run_id!r}'s strong directory to "
+                f"{str(resolved)!r}, but the parent expects {expected_dir!r}. The two "
+                f"processes disagree about where the registry is, so anything written "
+                f"here would be invisible to the caller. Set AEGIS_ML_REGISTRY_DIR "
+                f"identically for both, or run the search in-process."
+            )
+    return {"run_id": run_id}
 
 
 def _run(directory: Path) -> int:
@@ -75,12 +133,18 @@ def _run(directory: Path) -> int:
         f"target {problem.target.name!r} ({problem.target.task}), metric {problem.metric!r}"
     )
 
+    run_id = request.get("run_id")
+    strong_dir = request.get("strong_dir")
+    if run_id is not None:
+        _log(f"aegis-ml worker: strong (non-portable) winners will be persisted to {strong_dir}")
+
     recipe, leaderboard = run_search(
         frame,
         problem,
         tiers=request.get("tiers"),
         time_budget=request.get("time_budget"),
         seed=request.get("seed"),
+        **_strong_kwargs(run_id, strong_dir),
     )
 
     (directory / RECIPE_FILENAME).write_text(recipe.model_dump_json(indent=2), encoding="utf-8")

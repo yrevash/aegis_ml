@@ -231,8 +231,12 @@ labels them "declared not a driver". Together they absorb only **3.2 %** of tota
 attribution — the model correctly learned to ignore them. Chapter
 [03 §4](03-the-data-problem.md) explains why irrelevant columns were planted on purpose.
 
-Aegis's spine computes SHAP with `shap.TreeExplainer`, which works on tree-based models only.
-That constraint has a real consequence you will meet in §7.
+SHAP is computed per model family: `TreeExplainer` for tree models (exact, and given no
+background data — passing it any trips an additivity check), `LinearExplainer` for linear
+models, and `PermutationExplainer` for anything else. So every model in the ensemble can be
+explained, whatever kind it is.
+
+That dispatch was added deliberately, and §7 explains what it cost before it existed.
 
 ---
 
@@ -264,13 +268,24 @@ Two mechanisms in that picture are worth understanding now:
   `autogluon` and `tabpfn` appear in `Leaderboard.tiers_skipped` with the exact install
   command as the reason. An unavailable tier and a tier that lost on merit must never look
   the same.
-* **The top bar is hatched.** `ridge_reference` scored **0.7460** — the best score in the run
-  — and was *not* promoted. It is a linear model, and Aegis explains its models with
-  `shap.TreeExplainer`, which supports trees only. Promoting it would train fine, score fine,
-  and then raise an exception on the first request asking *why*. It is reported as an
-  **accuracy ceiling** — evidence of headroom — never as this model's performance. That is
-  what "portable" means in `Recipe`/`Candidate`: re-fittable *and* usable in the serving
-  environment.
+* **The top bar is hatched — and this is a lesson, not a rule.** In the run behind the
+  committed charts, `ridge_reference` scored **0.7460**, the best score on the board, and was
+  *not* promoted. Not because it was worse. Because the spine explained models with
+  `shap.TreeExplainer` only, so a linear model would have trained fine, scored fine, and then
+  raised on the first request asking *why*. A tooling limitation was picking the winner, and a
+  model scoring 0.7379 was promoted in its place.
+
+  **That has since been fixed** — SHAP now dispatches per family, linear estimators are on the
+  allowlist, and a ridge that wins is promoted. Linear members carry
+  `SimpleImputer(median) → StandardScaler` in front of the estimator, because unlike the tree
+  learners they have no native NaN path and this data deliberately carries ~4% missingness.
+
+  Keep the general shape of the lesson though: `portable` in `Recipe`/`Candidate` means
+  **re-fittable and usable in the serving environment**, and some models still are not — an
+  AutoGluon stacked ensemble or a TabPFN model cannot be rebuilt from a JSON recipe. Those are
+  reported as an **accuracy ceiling** rather than promoted, and are served from the trainer
+  venv through a separate bridge. When you hit a constraint like this, the first question is
+  whether the constraint is real or just unfixed.
 
 ---
 

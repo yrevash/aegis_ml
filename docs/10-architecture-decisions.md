@@ -44,7 +44,7 @@ The bridge:
 
 `aegis_ml.automl.recipe.to_aegis_members(recipe, random_state=...)` turns that into exactly the `list[tuple[str, Estimator]]` shape `aegis.ml.model._regression_members()` returns, and the **Aegis spine** fits it — keeping MAPIE conformal calibration, SHAP attribution, the `ModelCard` and the `dataset_digest`.
 
-`PORTABLE_KINDS` is an **explicit allowlist**, never a dynamic import of whatever a search asked for. Every entry is a tree learner `shap.TreeExplainer` supports, because the spine explains member-by-member with exactly that explainer — a non-tree member would train, score, promote, and then raise inside `explain()` on the first request that asks *why*.
+`PORTABLE_KINDS` is an **explicit allowlist**, never a dynamic import of whatever a search asked for. Entries are tree and linear learners. The spine explains member-by-member with a per-family dispatch, so explainability no longer gates promotion. It once did, and it cost the best model in a real run: a ridge at 0.7460 was refused while a 0.7379 tree was promoted.
 
 ### Consequences
 

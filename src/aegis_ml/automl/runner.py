@@ -56,6 +56,8 @@ __all__ = [
     "RECIPE_FILENAME",
     "REQUEST_FILENAME",
     "STDERR_TAIL_LINES",
+    "invoke_trainer_module",
+    "read_child_error",
     "run_in_trainer_venv",
     "trainer_available",
     "trainer_python",
@@ -128,6 +130,13 @@ def _child_env() -> dict[str, str]:
     src_root = str(Path(aegis_ml.__file__).resolve().parents[1])
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{src_root}{os.pathsep}{existing}" if existing else src_root
+    # Pin the child's registry root to the parent's *resolved* one. Both processes read the
+    # same AEGIS_ML_* environment and would normally agree — but a caller that repoints
+    # settings.registry_dir in-process (a test, a one-off script) mutates a singleton the
+    # child never sees, and a strong model persisted by the child would land in a directory
+    # the parent does not look in. Exporting the resolved value removes that divergence at
+    # the source rather than checking for it afterwards.
+    env["AEGIS_ML_REGISTRY_DIR"] = str(Path(settings.registry_dir).resolve())
     # Line-buffered child output, so a long AutoGluon fit's progress appears while it runs
     # instead of arriving in one block after it finishes (or never, if it is killed).
     env["PYTHONUNBUFFERED"] = "1"
@@ -146,92 +155,72 @@ def _default_timeout(time_budget: int) -> int:
     return max(4 * int(time_budget) + 600, 900)
 
 
-def _stream_stderr(stream: object, tail: deque[str]) -> None:
-    """Echo the child's stderr to ours line by line, retaining the tail.
+def read_child_error(directory: Path) -> dict[str, object] | None:
+    """Return the ``error.json`` a worker wrote, or ``None`` when it wrote none.
 
-    Runs on a thread so a chatty child cannot fill its pipe buffer and deadlock while the
-    parent waits on ``proc.wait()`` — the classic subprocess hang, and one that would look
-    exactly like "AutoGluon is slow".
-    """
-    for raw in stream:  # type: ignore[attr-defined]
-        line = raw.rstrip("\n")
-        tail.append(line)
-        print(f"[trainer] {line}", file=sys.stderr, flush=True)
-
-
-def run_in_trainer_venv(
-    frame: pd.DataFrame,
-    problem: MLProblem,
-    *,
-    tiers: list[TierName] | tuple[TierName, ...] | None = None,
-    time_budget: int | None = None,
-    seed: int | None = None,
-    timeout: int | None = None,
-    workdir: str | Path | None = None,
-) -> tuple[Recipe, Leaderboard]:
-    """Run :func:`aegis_ml.automl.search.run_search` in the trainer venv and read it back.
+    The file is the worker's own account of why it failed, and it survives a torch or
+    AutoGluon crash that pushes the real traceback out of the retained stderr tail. It
+    also carries the exception *type*, which is what lets a caller map a child failure
+    back onto a typed refusal instead of pattern-matching an error string —
+    :func:`aegis_ml.automl.strong.predict_strong` uses exactly that to tell "your trainer
+    venv drifted" apart from "the model crashed".
 
     Args:
-        frame: The training frame; written to parquet for the child.
-        problem: The spec; written to JSON for the child.
-        tiers: Tiers to attempt, or ``None`` for all four. The child skips the ones it
-            cannot run *with a reason*, which arrives in ``Leaderboard.tiers_skipped``.
-        time_budget: Per-budgeted-tier wall clock; defaults to
-            ``settings.automl_time_budget``.
-        seed: Split and estimator seed; defaults to ``settings.random_seed``.
-        timeout: Hard ceiling on the child process. Defaults to :func:`_default_timeout`.
-        workdir: Directory for the exchange files. When given it is *kept* after the run,
-            which is how you inspect a failing search's inputs; when omitted a temporary
-            directory is used and removed.
+        directory: The exchange directory handed to the worker.
 
     Returns:
-        ``(recipe, leaderboard)`` — the same pair :func:`aegis_ml.automl.search.run_search`
-        returns in-process, having crossed the venv boundary as JSON.
+        The parsed payload (``type``, ``message``, ``traceback``, and optionally
+        ``detail``), or ``None`` if the worker died before writing one.
+    """
+    path = directory / ERROR_FILENAME
+    if not path.exists():
+        return None
+    return dict(json.loads(path.read_text(encoding="utf-8")))
+
+
+def invoke_trainer_module(  # noqa: PLR0913 - each argument shapes a different message
+    module: str,
+    directory: Path,
+    *,
+    timeout: int,
+    label: str,
+    remedy: str,
+    interpreter: Path | None = None,
+    banner: str | None = None,
+) -> list[str]:
+    """Run ``<trainer_python> -m <module> <directory>`` and raise if it does not succeed.
+
+    Every worker this package runs in the trainer venv goes through here, so they all get
+    the same three guarantees: stderr streamed live on a reader thread (a chatty child
+    cannot fill its pipe and deadlock the parent), a hard wall-clock ceiling that kills
+    rather than waits forever, and a failure message that prefers the child's own
+    ``error.json`` traceback over the retained tail.
+
+    Args:
+        module: Dotted module path to run with ``-m`` in the trainer venv.
+        directory: The exchange directory; passed to the child as its only argument.
+        timeout: Wall-clock ceiling in seconds. Exceeding it kills the child and raises —
+            a partial result is never returned as a complete one.
+        label: What this run *is*, in words, e.g. ``"AutoML search"``. It opens both
+            failure messages, so the reader knows which subprocess died.
+        remedy: What the caller should do about a failure, appended to the message. It is
+            required rather than optional because a refusal without a remedy sends the
+            reader to the source at the worst possible moment.
+        interpreter: The trainer interpreter; resolved with :func:`trainer_python` when
+            omitted. Passing an already-resolved one avoids re-checking the venv.
+        banner: A line printed to stderr before the child starts. Defaults to the command.
+
+    Returns:
+        The retained tail of the child's stderr, oldest line first.
 
     Raises:
         TrainerVenvMissingError: If the trainer interpreter is absent.
-        AegisMLError: If the child exits non-zero (carrying its traceback), is killed by
-            the timeout, or exits zero without writing both result files.
-        ImportError: If pyarrow is missing, so the frame cannot be written.
+        AegisMLError: If the child is killed by the timeout or exits non-zero.
     """
-    interpreter = trainer_python()
-    require("aegis-ml[serve]", "pyarrow")  # frame.to_parquet's engine, named before use
-    time_budget = settings.automl_time_budget if time_budget is None else time_budget
-    seed = settings.random_seed if seed is None else seed
-    timeout = _default_timeout(time_budget) if timeout is None else timeout
-
-    if workdir is None:
-        with tempfile.TemporaryDirectory(prefix="aegis_ml_trainer_") as tmp:
-            return _run(interpreter, Path(tmp), frame, problem, tiers, time_budget, seed, timeout)
-    directory = Path(workdir)
-    directory.mkdir(parents=True, exist_ok=True)
-    return _run(interpreter, directory, frame, problem, tiers, time_budget, seed, timeout)
-
-
-def _run(  # noqa: PLR0913 - every argument is already resolved; bundling them would hide them
-    interpreter: Path,
-    directory: Path,
-    frame: pd.DataFrame,
-    problem: MLProblem,
-    tiers: list[TierName] | tuple[TierName, ...] | None,
-    time_budget: int,
-    seed: int,
-    timeout: int,
-) -> tuple[Recipe, Leaderboard]:
-    """Write the inputs, run the child, and read the results back."""
-    frame.to_parquet(directory / FRAME_FILENAME, index=False)
-    request = {
-        "problem": problem.model_dump(mode="json"),
-        "tiers": list(tiers) if tiers is not None else None,
-        "time_budget": int(time_budget),
-        "seed": int(seed),
-    }
-    (directory / REQUEST_FILENAME).write_text(json.dumps(request, indent=2), encoding="utf-8")
-
-    command = [str(interpreter), "-m", "aegis_ml.automl._worker", str(directory)]
+    resolved = trainer_python() if interpreter is None else interpreter
+    command = [str(resolved), "-m", module, str(directory)]
     print(
-        f"[aegis-ml] AutoML search in trainer venv: {' '.join(command)} "
-        f"(timeout {timeout}s, budget {time_budget}s/tier)",
+        banner or f"[aegis-ml] {label}: {' '.join(command)} (timeout {timeout}s)",
         file=sys.stderr,
         flush=True,
     )
@@ -266,13 +255,137 @@ def _run(  # noqa: PLR0913 - every argument is already resolved; bundling them w
 
     if killed:
         raise AegisMLError(
-            f"AutoML search in the trainer venv exceeded its {timeout}s ceiling and was "
-            f"killed. Lower --time-budget, drop the heaviest tier, or raise the timeout — "
-            f"a partial search is never returned as a complete one.\n"
-            f"Last output:\n  " + "\n  ".join(tail)
+            f"{label} in the trainer venv exceeded its {timeout}s ceiling and was killed. "
+            f"{remedy}\nLast output:\n  " + "\n  ".join(tail)
         )
     if returncode != 0:
-        raise AegisMLError(_failure_message(directory, returncode, tail))
+        raise AegisMLError(_failure_message(label, directory, returncode, remedy, tail))
+    return list(tail)
+
+
+def _stream_stderr(stream: object, tail: deque[str]) -> None:
+    """Echo the child's stderr to ours line by line, retaining the tail.
+
+    Runs on a thread so a chatty child cannot fill its pipe buffer and deadlock while the
+    parent waits on ``proc.wait()`` — the classic subprocess hang, and one that would look
+    exactly like "AutoGluon is slow".
+    """
+    for raw in stream:  # type: ignore[attr-defined]
+        line = raw.rstrip("\n")
+        tail.append(line)
+        print(f"[trainer] {line}", file=sys.stderr, flush=True)
+
+
+def run_in_trainer_venv(
+    frame: pd.DataFrame,
+    problem: MLProblem,
+    *,
+    tiers: list[TierName] | tuple[TierName, ...] | None = None,
+    time_budget: int | None = None,
+    seed: int | None = None,
+    timeout: int | None = None,
+    workdir: str | Path | None = None,
+    run_id: str | None = None,
+) -> tuple[Recipe, Leaderboard]:
+    """Run :func:`aegis_ml.automl.search.run_search` in the trainer venv and read it back.
+
+    Args:
+        frame: The training frame; written to parquet for the child.
+        problem: The spec; written to JSON for the child.
+        tiers: Tiers to attempt, or ``None`` for all four. The child skips the ones it
+            cannot run *with a reason*, which arrives in ``Leaderboard.tiers_skipped``.
+        time_budget: Per-budgeted-tier wall clock; defaults to
+            ``settings.automl_time_budget``.
+        seed: Split and estimator seed; defaults to ``settings.random_seed``.
+        timeout: Hard ceiling on the child process. Defaults to :func:`_default_timeout`.
+        workdir: Directory for the exchange files. When given it is *kept* after the run,
+            which is how you inspect a failing search's inputs; when omitted a temporary
+            directory is used and removed.
+        run_id: When given, the child persists the strong (non-portable) winner into
+            ``runs/<run_id>/strong/`` instead of discarding it with its temporary
+            directory, and :func:`aegis_ml.automl.strong.predict_strong` can call it
+            afterwards. When omitted, behaviour is exactly as before: an AutoGluon or
+            TabPFN fit contributes its score to the leaderboard and is then deleted, so
+            the accuracy ceiling is an assertion nobody can re-run.
+
+    Returns:
+        ``(recipe, leaderboard)`` — the same pair :func:`aegis_ml.automl.search.run_search`
+        returns in-process, having crossed the venv boundary as JSON.
+
+    Raises:
+        TrainerVenvMissingError: If the trainer interpreter is absent.
+        AegisMLError: If the child exits non-zero (carrying its traceback), is killed by
+            the timeout, or exits zero without writing both result files.
+        ImportError: If pyarrow is missing, so the frame cannot be written.
+    """
+    interpreter = trainer_python()
+    require("aegis-ml[serve]", "pyarrow")  # frame.to_parquet's engine, named before use
+    time_budget = settings.automl_time_budget if time_budget is None else time_budget
+    seed = settings.random_seed if seed is None else seed
+    timeout = _default_timeout(time_budget) if timeout is None else timeout
+
+    if workdir is None:
+        with tempfile.TemporaryDirectory(prefix="aegis_ml_trainer_") as tmp:
+            return _run(
+                interpreter,
+                Path(tmp),
+                frame,
+                problem,
+                tiers,
+                time_budget,
+                seed,
+                timeout,
+                run_id,
+            )
+    directory = Path(workdir)
+    directory.mkdir(parents=True, exist_ok=True)
+    return _run(
+        interpreter, directory, frame, problem, tiers, time_budget, seed, timeout, run_id
+    )
+
+
+def _run(  # noqa: PLR0913 - every argument is already resolved; bundling them would hide them
+    interpreter: Path,
+    directory: Path,
+    frame: pd.DataFrame,
+    problem: MLProblem,
+    tiers: list[TierName] | tuple[TierName, ...] | None,
+    time_budget: int,
+    seed: int,
+    timeout: int,
+    run_id: str | None,
+) -> tuple[Recipe, Leaderboard]:
+    """Write the inputs, run the child, and read the results back."""
+    frame.to_parquet(directory / FRAME_FILENAME, index=False)
+    request: dict[str, object] = {
+        "problem": problem.model_dump(mode="json"),
+        "tiers": list(tiers) if tiers is not None else None,
+        "time_budget": int(time_budget),
+        "seed": int(seed),
+        "run_id": run_id,
+        "strong_dir": None if run_id is None else str(_strong_destination(run_id)),
+    }
+    (directory / REQUEST_FILENAME).write_text(json.dumps(request, indent=2), encoding="utf-8")
+
+    command = [str(interpreter), "-m", "aegis_ml.automl._worker", str(directory)]
+    tail = invoke_trainer_module(
+        "aegis_ml.automl._worker",
+        directory,
+        interpreter=interpreter,
+        timeout=timeout,
+        label="AutoML search",
+        remedy=(
+            "Lower --time-budget, drop the heaviest tier, or raise the timeout — a "
+            "partial search is never returned as a complete one. The serving venv's own "
+            "tiers were not run either, so there is no partial result to fall back on: "
+            "re-run with `--tier baseline` for an in-process search that does not need "
+            "the trainer venv."
+        ),
+        banner=(
+            f"[aegis-ml] AutoML search in trainer venv: {' '.join(command)} "
+            f"(timeout {timeout}s, budget {time_budget}s/tier)"
+        ),
+    )
 
     recipe_path = directory / RECIPE_FILENAME
     leaderboard_path = directory / LEADERBOARD_FILENAME
@@ -288,19 +401,37 @@ def _run(  # noqa: PLR0913 - every argument is already resolved; bundling them w
     return recipe, leaderboard
 
 
-def _failure_message(directory: Path, returncode: int, tail: deque[str]) -> str:
+def _failure_message(
+    label: str,
+    directory: Path,
+    returncode: int,
+    remedy: str,
+    tail: deque[str],
+) -> str:
     """Compose the error for a non-zero child, preferring the traceback it wrote itself."""
-    error_path = directory / ERROR_FILENAME
+    payload = read_child_error(directory)
     detail = ""
-    if error_path.exists():
-        payload = json.loads(error_path.read_text(encoding="utf-8"))
+    if payload is not None:
         detail = (
             f"\nChild raised {payload.get('type', '?')}: {payload.get('message', '')}\n"
             f"{payload.get('traceback', '')}"
         )
     return (
-        f"AutoML search in the trainer venv failed with exit code {returncode}. The "
-        f"serving venv's own tiers were not run, so there is no partial result to fall "
-        f"back on — re-run with `--tier baseline` for an in-process search that does not "
-        f"need the trainer venv.{detail}\nLast output:\n  " + "\n  ".join(tail)
+        f"{label} in the trainer venv failed with exit code {returncode}. {remedy}"
+        f"{detail}\nLast output:\n  " + "\n  ".join(tail)
     )
+
+
+def _strong_destination(run_id: str) -> Path:
+    """Return where the child should persist a non-portable winner for ``run_id``.
+
+    Resolved *here*, in the parent, and passed across as an absolute path rather than
+    letting the child re-derive it from ``run_id``. The two interpreters read the same
+    ``AEGIS_ML_*`` environment, so they would normally agree — but a caller that repoints
+    ``settings.registry_dir`` in-process (a test, a one-off script) mutates a singleton the
+    child never sees, and the strong model would land in a directory the parent does not
+    look in. One resolution, in one process, removes that whole class of divergence.
+    """
+    from aegis_ml.automl import strong  # noqa: PLC0415 - strong imports this module
+
+    return strong.strong_dir(run_id)
