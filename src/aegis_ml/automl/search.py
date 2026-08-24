@@ -45,6 +45,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from aegis_ml._require import require
+from aegis_ml.automl import strong as strong_mod
 from aegis_ml.automl import tiers as tiers_mod
 from aegis_ml.automl.recipe import (
     LINEAR_PARAMS,
@@ -236,6 +237,22 @@ class _Context:
     y_holdout: pd.Series
     encoded_names: list[str]
     labels: list[Any] = field(default_factory=list)
+    preprocessor: Any = None
+    """The fitted encoder every tier was scored through.
+
+    Kept on the context because a strong model fitted on ``x_train`` is only callable
+    again *with its encoder*: persisting a TabPFN estimator alone would leave an artifact
+    nobody can feed, which is a slower way of throwing it away.
+    """
+    run_id: str | None = None
+    """The run whose ``strong/`` directory a non-portable winner is persisted into.
+
+    ``None`` means "do not persist", which is the pre-existing behaviour: the strong tiers
+    fit, score, and are deleted with their temporary directory, leaving an accuracy-ceiling
+    row nobody can re-run. When set, the winner survives and
+    :func:`aegis_ml.automl.strong.verify_strong` can reproduce the number on this same
+    holdout.
+    """
 
     @property
     def task(self) -> str:
@@ -272,6 +289,7 @@ def _build_context(
     *,
     time_budget: int,
     seed: int,
+    run_id: str | None = None,
 ) -> _Context:
     """Split, encode and package the data every tier will see.
 
@@ -340,6 +358,8 @@ def _build_context(
         y_holdout=holdout_frame[problem.target.name],
         encoded_names=encoded_names,
         labels=labels,
+        preprocessor=preprocessor,
+        run_id=run_id,
     )
 
 
@@ -799,6 +819,7 @@ def _search_autogluon(ctx: _Context) -> tuple[list[_Scored], dict[str, str]]:
 
         holdout_x = ctx.holdout_frame[ctx.problem.feature_names]
         model_names = list(predictor.model_names())[:_AUTOGLUON_TOP_MODELS]
+        best: tuple[str, float] | None = None
         for model_name in model_names:
             try:
                 y_pred = predictor.predict(holdout_x, model=model_name)
@@ -810,6 +831,8 @@ def _search_autogluon(ctx: _Context) -> tuple[list[_Scored], dict[str, str]]:
             except Exception as exc:  # audit-ok: one AG model failing is recorded, not faked
                 failures[f"autogluon:{model_name}"] = f"{type(exc).__name__}: {exc}"
                 continue
+            if best is None or _better(value, best[1], ctx.higher_is_better):
+                best = (model_name, value)
             scored.append(
                 _Scored(
                     candidate=Candidate(
@@ -830,6 +853,45 @@ def _search_autogluon(ctx: _Context) -> tuple[list[_Scored], dict[str, str]]:
                     )
                 )
             )
+        if ctx.run_id is not None and best is not None:
+            # Persist BEFORE the TemporaryDirectory closes. The predictor is a directory
+            # tree, not an object, so this is a clone to the run directory rather than a
+            # dump — and it has to happen while the source tree still exists. Persisting
+            # the specific model that produced the reported number, not "whichever the
+            # predictor calls best today", is what makes verify_strong() a check rather
+            # than a coincidence.
+            saved = strong_mod.save_strong_model(
+                ctx.run_id,
+                "autogluon",
+                predictor,
+                problem=ctx.problem,
+                score=best[1],
+                feature_order=ctx.problem.feature_names,
+                metric=ctx.metric,
+                model_name=best[0],
+                detail={
+                    "preset": "best_quality",
+                    "time_limit": int(ctx.time_budget),
+                    # The split parameters, so a verifier can rebuild the EXACT rows the
+                    # recorded score was measured on. Without them verify_strong() can
+                    # only be handed "some held-out rows", and a delta then means nothing.
+                    "seed": int(ctx.seed),
+                    "holdout_fraction": HOLDOUT_FRACTION,
+                    "holdout_rows": int(len(ctx.holdout_frame)),
+                    "reason_not_portable": (
+                        "AutoGluon models are bagged/stacked wrappers; their out-of-fold "
+                        "structure has no constructor-kwargs form the serving venv could "
+                        "rebuild"
+                    ),
+                },
+            )
+            for entry in scored:
+                if entry.candidate.name == f"autogluon_{best[0]}":
+                    entry.candidate.detail["persisted_to"] = str(saved)
+                    entry.candidate.detail["callable_via"] = (
+                        "aegis_ml.automl.strong.predict_strong(run_id, frame) — a "
+                        "subprocess in the trainer venv, batch use only"
+                    )
     if not scored and not failures:
         failures["autogluon"] = "AutoGluon fitted no model within the time budget"
     return scored, failures
@@ -907,6 +969,7 @@ def _search_tabpfn(ctx: _Context) -> tuple[list[_Scored], dict[str, str]]:
             "Install with `uv pip install 'aegis-ml[strong]'`"
         )
 
+    best_fit: tuple[str, Any, float] | None = None
     for name, model in variants:
         try:
             started = time.perf_counter()
@@ -920,6 +983,8 @@ def _search_tabpfn(ctx: _Context) -> tuple[list[_Scored], dict[str, str]]:
         except Exception as exc:  # audit-ok: recorded with its message, never a number
             failures[f"tabpfn:{name}"] = f"{type(exc).__name__}: {exc}"
             continue
+        if best_fit is None or _better(value, best_fit[2], ctx.higher_is_better):
+            best_fit = (name, model, value)
         scored.append(
             _Scored(
                 candidate=Candidate(
@@ -933,6 +998,38 @@ def _search_tabpfn(ctx: _Context) -> tuple[list[_Scored], dict[str, str]]:
                 )
             )
         )
+
+    if ctx.run_id is not None and best_fit is not None:
+        # The encoder goes with it. TabPFN is fitted on the encoded matrix, so the
+        # estimator on its own is an artifact nobody can feed — and the whole point of
+        # persisting it is that somebody can.
+        saved = strong_mod.save_strong_model(
+            ctx.run_id,
+            "tabpfn",
+            best_fit[1],
+            problem=ctx.problem,
+            score=best_fit[2],
+            feature_order=ctx.problem.feature_names,
+            metric=ctx.metric,
+            preprocessor=ctx.preprocessor,
+            model_name=best_fit[0],
+            detail={
+                **detail_base,
+                # The split parameters, so a verifier can rebuild the EXACT rows the
+                # recorded score was measured on. Without them verify_strong() can only
+                # be handed "some held-out rows", and a delta then means nothing.
+                "seed": int(ctx.seed),
+                "holdout_fraction": HOLDOUT_FRACTION,
+                "holdout_rows": int(len(ctx.holdout_frame)),
+            },
+        )
+        for entry in scored:
+            if entry.candidate.name == best_fit[0]:
+                entry.candidate.detail["persisted_to"] = str(saved)
+                entry.candidate.detail["callable_via"] = (
+                    "aegis_ml.automl.strong.predict_strong(run_id, frame) — a subprocess "
+                    "in the trainer venv, batch use only, under the licence above"
+                )
     return scored, failures
 
 
@@ -949,6 +1046,25 @@ entry plus one function, and so that :func:`run_search`'s loop has no tier-speci
 # ─────────────────────────────────────────────────────────────────────────────
 # Selection
 # ─────────────────────────────────────────────────────────────────────────────
+def _better(value: float, incumbent: float, higher_is_better: bool) -> bool:
+    """Return whether ``value`` beats ``incumbent`` in the search's metric direction.
+
+    Split out of :func:`_rank` because the strong tiers have to pick their best candidate
+    *before* ranking happens — the model must be persisted while its predictor's temporary
+    directory still exists. Re-deriving the direction inline in each tier is how one of
+    them eventually persists the worst model on an error metric.
+
+    Args:
+        value: The candidate's score.
+        incumbent: The best score so far.
+        higher_is_better: The metric's direction, from :data:`METRIC_HIGHER_IS_BETTER`.
+
+    Returns:
+        ``True`` when ``value`` is strictly better.
+    """
+    return value > incumbent if higher_is_better else value < incumbent
+
+
 def _rank(scored: list[_Scored], higher_is_better: bool) -> list[_Scored]:
     """Rank candidates best-first, breaking ties towards the cheaper tier.
 
@@ -1000,6 +1116,7 @@ def run_search(
     tiers: list[TierName] | tuple[TierName, ...] | None = None,
     time_budget: int | None = None,
     seed: int | None = None,
+    run_id: str | None = None,
 ) -> tuple[Recipe, Leaderboard]:
     """Search every available tier and return the best portable recipe plus the full board.
 
@@ -1021,6 +1138,14 @@ def run_search(
             other tiers happened to be installed. Defaults to
             ``settings.automl_time_budget``.
         seed: Split and estimator seed; defaults to ``settings.random_seed``.
+        run_id: When given, the winning **non-portable** model (AutoGluon's stack, or the
+            TabPFN fit) is persisted into ``runs/<run_id>/strong/`` with a manifest
+            recording the exact library versions it was fitted with, and can be called
+            again through :func:`aegis_ml.automl.strong.predict_strong`. When omitted the
+            strong tiers behave as before: they fit, they contribute a score, and they are
+            deleted — which leaves the leaderboard's accuracy-ceiling row as an assertion
+            nobody can re-run. Persisting costs disk (an AutoGluon ``best_quality`` clone
+            is tens to hundreds of MB) and buys a verifiable ceiling.
 
     Returns:
         ``(recipe, leaderboard)``. The recipe is always portable and always fittable in
@@ -1038,7 +1163,9 @@ def run_search(
     time_budget = settings.automl_time_budget if time_budget is None else time_budget
     started = time.perf_counter()
 
-    ctx = _build_context(frame, problem, time_budget=time_budget, seed=seed)
+    ctx = _build_context(
+        frame, problem, time_budget=time_budget, seed=seed, run_id=run_id
+    )
     to_run, skipped = tiers_mod.resolve_tiers(tiers)
 
     all_scored: list[_Scored] = []

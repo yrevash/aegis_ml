@@ -34,6 +34,14 @@ from aegis_ml.automl.recipe import (
 )
 from aegis_ml.automl.runner import run_in_trainer_venv, trainer_available
 from aegis_ml.automl.search import run_search, score_predictions
+from aegis_ml.automl.strong import (
+    has_strong_model,
+    predict_proba_strong,
+    predict_strong,
+    save_strong_model,
+    strong_manifest,
+    verify_strong,
+)
 from aegis_ml.automl.tiers import (
     TABPFN_LICENSE_NOTICE,
     TIER_ORDER,
@@ -44,6 +52,12 @@ from aegis_ml.automl.tiers import (
 )
 
 __all__ = [
+    "has_strong_model",
+    "predict_proba_strong",
+    "predict_strong",
+    "save_strong_model",
+    "strong_manifest",
+    "verify_strong",
     "PORTABLE_KINDS",
     "TABPFN_LICENSE_NOTICE",
     "TIER_ORDER",

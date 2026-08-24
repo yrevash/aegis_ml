@@ -1058,6 +1058,7 @@ def train_flow(  # noqa: PLR0915 - one linear pipeline; splitting it would hide 
                     tiers=tiers,
                     time_budget=resolved_budget,
                     seed=resolved_seed,
+                    run_id=run_id,
                 )
                 record.note(f"search ran in the isolated trainer venv: {settings.trainer_venv}")
             else:

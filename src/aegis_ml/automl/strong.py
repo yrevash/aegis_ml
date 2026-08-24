@@ -66,6 +66,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, keeps the module import lig
 __all__ = [
     "AUTOGLUON_DIRNAME",
     "COMMON_VERSION_KEYS",
+    "DEFAULT_VERIFY_TOLERANCE",
     "FRAME_FILENAME",
     "MANIFEST_FILENAME",
     "MANIFEST_VERSION",
@@ -89,6 +90,7 @@ __all__ = [
     "strong_dir",
     "strong_manifest",
     "verify_strong",
+    "version_drift",
 ]
 
 STRONG_DIRNAME = "strong"

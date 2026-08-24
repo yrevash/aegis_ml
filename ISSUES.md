@@ -3,7 +3,7 @@
 > Resolved entries are struck through and kept, not deleted: how a defect was found is
 > usually more useful than the fact that it is gone.
 >
-> **Status: 12 of 21 fixed.** Five more issues surfaced while writing the beginner docs
+> **Status: 14 of 23 fixed.** Five more issues surfaced while writing the beginner docs
 > (#17–21); the two serious ones are fixed.
 >
 > Previously: 10 of 16 fixed. The 6 remaining are 1 accepted limitation (#7, ONNX, off by
@@ -143,6 +143,43 @@ produce silently.
 
 ---
 
+## Found by the user reviewing the docs — both fixed
+
+### 22. ~~SHAP's tree-only explainer was deciding which model got promoted~~ — FIXED
+`aegis/ml/model.py` hardcoded `shap.TreeExplainer`, so `search.py` marked linear models
+non-portable — *"promoting a linear member would train fine, score fine, then raise inside
+`explain()`"*. The consequence was measured: **`ridge_reference` scored 0.7460, the best score
+on the board, and was refused promotion** while a 0.7379 tree was promoted in its place.
+
+The user's call: *"aegis is not something you take as final hard truth, you change it based on
+the sota approch available."* Correct — a tooling limitation was choosing the winner.
+
+**Fixed**: `explain/explainers.py` dispatches per family — `TreeExplainer` for trees (no
+background; passing any trips an additivity check), `LinearExplainer` for linear,
+`PermutationExplainer` otherwise. Linear estimators joined `PORTABLE_KINDS`, wrapped in
+`SimpleImputer(median) → StandardScaler` because the separate NaN constraint is real and the
+data carries ~4% missingness. **Aegis core was patched** (sanctioned): tree path byte-identical,
+its own suite 57 passed before and after. A fresh demo run now promotes `ridge_reference` at
+r²=0.7460.
+
+### 23. ~~AutoGluon and TabPFN were trained, scored, then thrown away~~ — FIXED
+Their scores were reported as an "accuracy ceiling" nobody could call, on the reasoning that
+they cannot be re-fitted in the serving venv. The user's call: *"we need to use them, not
+'version mismatch so we dont use' — we will make a ml venv and pin in that and use from that."*
+
+**Fixed**: `automl/strong.py` persists the fitted model into `runs/<id>/strong/` with its exact
+library versions recorded, and `predict_strong` runs inference in `.venv-ml` through a
+subprocess bridge. `verify_strong` re-scores it and **reproduces the recorded number exactly —
+recorded 0.6613144284511125, reproduced 0.6613144284511125, delta 0.0**. The ceiling is now
+measured rather than asserted. Version drift is reported, never silently tolerated.
+
+**Honest limit**: ~1.3 s per call, flat in row count — the cost is `import autogluon` (0.98 s)
+plus model load, not prediction. Good for batch scoring, evals, the card and a demo; **not** an
+in-request path. The in-request path is unchanged: the portable recipe fitted into the Aegis
+spine, in-process, with its own MAPIE intervals and SHAP.
+
+---
+
 ## Found while writing the beginner docs — all fixed
 
 ### 17. ~~`config/*.toml` was read by nothing~~ — FIXED
@@ -249,7 +286,7 @@ For contrast, so this file is not read as a verdict on the whole package:
 | Evidently drift | stable → 0.000 share `pass`; shifted → 0.429 share `block`, correct columns named |
 | NannyML label-free estimate | `estimated_rmse = 2.07 [1.71, 2.44]` |
 | Optuna HPO | r² 0.6158 → 0.6556 in 12 trials; SQLite study resumes |
-| Test suite | **315 passed**, 0 failed, 0 xfail |
+| Test suite | **318 passed**, 0 failed, 0 xfail |
 | Per-run visuals | 9 PNGs + `index.html` (0 external refs) + `interactive.html`, written automatically by the `visuals` stage in `train_flow` and `drift_flow` |
 | Held-out split provenance | recovered and **verified**: re-scoring the persisted model on the recovered rows reproduces the registered r²=0.722406014223 exactly; a wrong seed gives 0.7805 and is rejected |
 | Trainer-venv subprocess bridge | real child process, identical result in-process vs cross-process; crash path surfaces the traceback |
