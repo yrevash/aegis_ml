@@ -1296,7 +1296,8 @@ def drift_features(
             axis.set_ylabel("density")
             stat = "KS"
         axis.set_title(
-            f"{name} — {stat} {magnitude:.3f}" + ("  ⚑ flagged" if moved else "  (stable)"),
+            f"{name} — {stat} {magnitude:.3f}"
+            + ("  FLAGGED by the drift report" if moved else "  (stable)"),
             fontsize=10.5,
             color=theme.PALETTE["accent"] if moved else theme.PALETTE["muted"],
         )

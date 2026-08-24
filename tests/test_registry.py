@@ -78,21 +78,19 @@ def test_run_id_from_json_cannot_escape_the_runs_directory(hostile: str) -> None
         store.run_dir(hostile)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "FINDING: store._validate_run_id (src/aegis_ml/registry/store.py:179-180) documents "
-        "itself as rejecting a run id that would 'collide with a shell glob', but the check "
-        "is only `run_id != Path(run_id).name`. Glob metacharacters are single path segments "
-        "and pass. Not a path-escape hole — the escape check is sound — but the docstring "
-        "promises more than the code delivers, and a run id containing '*' becomes a "
-        "directory name that `rm runs/<id>` or any shell loop over runs/ will mishandle."
-    ),
-)
-@pytest.mark.parametrize("globbish", ["wild*card", "run?id", "run[0-9]"])
+@pytest.mark.parametrize("globbish", ["wild*card", "run?id", "run[0-9]", "run id", "run;id"])
 def test_run_id_with_shell_glob_metacharacters_is_rejected(globbish: str) -> None:
-    """Documented but not implemented: glob metacharacters in a run id."""
-    with pytest.raises(ValueError):
+    """A glob metacharacter is a legal path segment, and that is exactly the problem.
+
+    This test was written as a strict xfail: `_validate_run_id` promised in its docstring to
+    reject an id that would "collide with a shell glob", but only checked for path escape,
+    and `run[0-9]` is a perfectly legal single segment. Never an escape hole — but a run
+    directory named `wild*card` makes `rm -rf runs/<id>` mean something other than what it
+    reads like, and that surfaces as "the cleanup deleted the wrong run".
+
+    The charset check now exists, so this is a live regression test rather than a finding.
+    """
+    with pytest.raises(ValueError, match="outside"):
         store.run_dir(globbish)
 
 

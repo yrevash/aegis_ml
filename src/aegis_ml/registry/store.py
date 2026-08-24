@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import secrets
 import time
 from collections.abc import Iterator, Mapping
@@ -176,13 +177,44 @@ def artifact(run_id: str, name: str) -> Path:
     return run_dir(run_id) / name
 
 
+#: Characters a run id may contain. Deliberately narrower than "a legal file name":
+#: :func:`new_run_id` only ever emits ``<domain>-<timestamp>-<hex>``, so anything outside
+#: this set is a caller inventing an id, and the cost of allowing it is paid later by
+#: whoever types ``rm -rf runs/<id>``.
+_RUN_ID_ALLOWED = re.compile(r"\A[A-Za-z0-9._-]+\Z")
+
+
 def _validate_run_id(run_id: str) -> None:
-    """Reject a run id that could escape ``runs/`` or collide with a shell glob."""
+    """Reject a run id that could escape ``runs/`` or collide with a shell glob.
+
+    Two separate checks, because they fail differently.
+
+    The **path** check (``run_id != Path(run_id).name``) is the security-relevant one: it
+    stops ``../`` and absolute paths from escaping ``runs/``.
+
+    The **charset** check is the one this docstring used to promise and not deliver. A glob
+    metacharacter is a perfectly legal single path segment, so ``run[0-9]``, ``wild*card``
+    and ``run?id`` all passed the path check — and then became directory names that every
+    shell loop over ``runs/`` silently mishandles. Not an escape hole, but the kind of
+    defect that surfaces as "the cleanup script deleted the wrong run", which is worse than
+    an error at creation time. Found by ``tests/test_registry.py``.
+
+    Raises:
+        ValueError: If ``run_id`` is empty, escapes its directory, or contains anything
+            outside :data:`_RUN_ID_ALLOWED`.
+    """
     if not run_id or run_id != Path(run_id).name or run_id in {".", ".."}:
         raise ValueError(
             f"run_id {run_id!r} is not a single safe path segment. Run ids are generated "
             f"by aegis_ml.registry.store.new_run_id() and must stay filesystem-safe: they "
             f"become directory names, and they cross process boundaries as JSON."
+        )
+    if not _RUN_ID_ALLOWED.match(run_id):
+        raise ValueError(
+            f"run_id {run_id!r} contains characters outside [A-Za-z0-9._-]. A run id "
+            f"becomes a directory name, so a glob metacharacter in it makes every shell "
+            f"loop over runs/ ambiguous — `rm -rf runs/{run_id}` would not mean what it "
+            f"reads like. Ids from new_run_id() are always within this set."
         )
 
 

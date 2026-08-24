@@ -30,7 +30,6 @@ from aegis_ml.registry import store
 from aegis_ml.settings import settings
 from tests.fixtures import frames as fx
 
-
 # ── the data contract report ──────────────────────────────────────────────────
 
 
@@ -230,10 +229,9 @@ def test_train_evaluate_gate_and_promote(frame, problem, seed) -> None:
 @pytest.mark.slow
 def test_a_second_worse_run_is_refused_and_the_champion_survives(frame, problem, seed) -> None:
     """The point of the gate: a worse challenger leaves the serving file untouched."""
+    from aegis_ml.automl import recipe as R
     from aegis_ml.contracts.errors import PromotionRejectedError
     from tests.fixtures.builders import gate_decision, registry_entry, train_result
-
-    from aegis_ml.automl import recipe as R
 
     pipeline = R.fit_recipe(R.baseline_recipe(problem), frame, problem, random_state=seed)
 

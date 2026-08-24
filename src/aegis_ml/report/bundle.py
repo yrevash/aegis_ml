@@ -929,15 +929,17 @@ def build_bundle(
         ImportError: When matplotlib/seaborn are missing — the whole bundle is figures, so
             there is nothing to degrade to.
     """
+    # Loading comes before any mkdir: `bundle_dir` creates the run directory, so building
+    # for an id that is not registered would leave an empty `runs/<typo>/visuals/` behind,
+    # and a directory under runs/ is how every other tool here says "a run happened".
+    assets = load_assets(
+        run_id, current_frame=current_frame, forecast_payload=forecast_payload
+    )
     directory = bundle_dir(run_id)
     for name in (*PLOT_FILES.values(), MANIFEST_NAME, INDEX_NAME, INTERACTIVE_NAME):
         stale = directory / name
         if stale.exists():
             stale.unlink()
-
-    assets = load_assets(
-        run_id, current_frame=current_frame, forecast_payload=forecast_payload
-    )
     recovery = recover_split(assets, seed_search=seed_search)
     result = assets.entry.result
     problem = assets.problem

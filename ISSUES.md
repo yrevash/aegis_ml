@@ -2,6 +2,10 @@
 
 > Resolved entries are struck through and kept, not deleted: how a defect was found is
 > usually more useful than the fact that it is gone.
+>
+> **Status: 10 of 16 fixed.** The 6 remaining are 1 accepted limitation (#7, ONNX, off by
+> default), 1 action for the operator (#11, TabPFN token — needs a browser), and 4 defects in
+> *Aegis's own* repo (#13–16) recorded so they are not inherited by accident.
 
 Everything here was found by **running the code**, not by reading it. Each entry says what
 is wrong, how bad it is, how to reproduce it, and what the fix looks like. Nothing in this
@@ -35,17 +39,22 @@ holds no availability logic of its own. Verified in both venvs — the serving v
 both strong tiers as not importable, and the trainer venv correctly reports `skipped tabpfn`
 with the weights/token remedy.
 
-### 2. No test suite
+### 2. ~~No test suite~~ — FIXED
 `tests/` is empty. The agent writing it was stopped before it produced anything, so there
 is no regression net at all. Individual modules were verified live by their authors, and
 `scripts/run_demo.py` exercises the happy path, but nothing guards against a change
 silently breaking a module tomorrow.
 
-**Fix:** write it. Highest-value tests, in order: the dep-free guarantee for
-`aegis_ml.contracts` (subprocess, assert no pandas/numpy/sklearn/torch in `sys.modules`);
-the realism band and both learnability guards; recipe JSON round-trip and portability
-refusal; metric direction correctness in `HIGHER_IS_BETTER`; the promotion gate's five
-criteria; registry promote/rollback atomicity against `tmp_path`.
+**Fixed.** `tests/` now holds 14 files: **314 passed** in ~4.5 min with the Aegis checkout on
+`PYTHONPATH` (306 passed + 3 skipped without it — the skips are the three `DomainAdapter`
+Protocol checks). Test doubles live only in `tests/fixtures/`, and `tests/test_meta.py` runs
+`scripts/audit_no_mocks.py` as a test so a mock reaching `src/` fails the suite.
+
+It immediately earned its keep: a strict-xfail found that `store._validate_run_id` documented
+itself as rejecting a run id that would "collide with a shell glob" while only checking for
+path escape — `run[0-9]` and `wild*card` passed. Not an escape hole, but a run directory named
+`wild*card` makes `rm -rf runs/<id>` mean something other than what it reads like. The charset
+check now exists and the xfail is a live regression test.
 
 ### 3. ~~`reference/` is incomplete~~ — FIXED
 Present: `problem.py`, `adapter/{__init__,schema,ml_spec,generator}.py`. **Missing:**
@@ -195,4 +204,7 @@ For contrast, so this file is not read as a verdict on the whole package:
 | Evidently drift | stable → 0.000 share `pass`; shifted → 0.429 share `block`, correct columns named |
 | NannyML label-free estimate | `estimated_rmse = 2.07 [1.71, 2.44]` |
 | Optuna HPO | r² 0.6158 → 0.6556 in 12 trials; SQLite study resumes |
+| Test suite | **314 passed**, 0 failed, 0 xfail |
+| Per-run visuals | 9 PNGs + `index.html` (0 external refs) + `interactive.html`, written automatically by the `visuals` stage in `train_flow` and `drift_flow` |
+| Held-out split provenance | recovered and **verified**: re-scoring the persisted model on the recovered rows reproduces the registered r²=0.722406014223 exactly; a wrong seed gives 0.7805 and is rejected |
 | Trainer-venv subprocess bridge | real child process, identical result in-process vs cross-process; crash path surfaces the traceback |
