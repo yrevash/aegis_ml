@@ -396,7 +396,7 @@ def to_aegis_members(recipe: Recipe, *, random_state: int) -> list[tuple[str, An
     it. Anything returned here can therefore be dropped in without touching ``aegis/``.
 
     Args:
-        recipe: A portable recipe, typically from :func:`~aegis_ml.automl.search.search`.
+        recipe: A portable recipe, typically from :func:`~aegis_ml.automl.search.run_search`.
         random_state: Seed applied to every member that accepts one, so two runs of the
             same recipe produce the same model.
 

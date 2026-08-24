@@ -273,7 +273,7 @@ def tune(
             decides promotion.
         problem: The spec; supplies columns, task and the metric being optimised.
         recipe: The recipe to refine, normally the winner from
-            :func:`aegis_ml.automl.search.search`.
+            :func:`aegis_ml.automl.search.run_search`.
         n_trials: Trials this invocation adds to the (possibly resumed) study. Defaults to
             ``settings.hpo_trials``.
         timeout: Wall-clock seconds for this invocation. Defaults to

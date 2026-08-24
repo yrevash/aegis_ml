@@ -26,6 +26,11 @@ SDV lives in the ``strong`` extra and therefore in the isolated trainer venv: it
 torch through CTGAN and will not resolve under the backend's ``pandas<2.4`` /
 ``numpy<2.5`` / ``numba==0.67.0`` caps. Sampling happens there; the parquet it writes is
 what crosses back.
+
+Verified against **SDV 1.38.1 / SDMetrics 0.29.0** in the trainer venv, on a 300-row frame:
+``gaussian_copula`` fit → 300 sampled rows → quality 0.9306 (column shapes 0.9587, column
+pair trends 0.9025) with ``new_row_share`` 1.0. The only surface that moved between 1.37 and
+1.38 is the evaluation entry point — see :func:`quality_report`.
 """
 
 from __future__ import annotations
@@ -316,7 +321,12 @@ def quality_report(
             f"Only in real: {sorted(real_columns - synthetic_columns)}. "
             f"Only in synthetic: {sorted(synthetic_columns - real_columns)}."
         )
-    evaluation = _sdv("evaluation.single_table")
+    # ``sdv.evaluation``, not ``sdv.evaluation.single_table``. SDV 1.38 moved the evaluation
+    # entry points up one level and listed the old ones in
+    # ``sdv.evaluation.single_table.DEPRECATED_EVALUATION_FUNCTIONS``; calling them still
+    # works but emits a FutureWarning on every report, which is exactly the kind of noise
+    # that trains a reader to ignore warnings. Both spellings take the same arguments.
+    evaluation = _sdv("evaluation")
     resolved = metadata or metadata_for(real, problem=problem, table_name=table_name)
     report = evaluation.evaluate_quality(
         real_data=real, synthetic_data=synthetic, metadata=resolved, verbose=False

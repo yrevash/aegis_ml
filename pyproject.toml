@@ -39,6 +39,12 @@ serve = [
     "evidently>=0.7",
     "nannyml>=0.13",
     "pyarrow>=17",
+    # Per-run visuals. All three already arrive transitively (shap/nannyml pull matplotlib,
+    # evidently pulls plotly) — naming them here makes the dependency honest rather than
+    # accidental, so a future resolve cannot drop the thing every report renders with.
+    "matplotlib>=3.8",
+    "seaborn>=0.13",
+    "plotly>=5.24",
 ]
 
 # ── TIER: strong ───────────────────────────────────────────────────────────────
@@ -51,7 +57,11 @@ strong = [
     "tabpfn>=2.5",
     "tabpfn-extensions>=0.1",
     "torch>=2.4",
-    "sdv>=1.37",
+    # Floor raised from 1.37 to the version `data/synth.py` was actually executed against.
+    # 1.38 promoted `evaluate_quality`/`run_diagnostic` from `sdv.evaluation.single_table`
+    # to `sdv.evaluation` and deprecated the old path; the module now calls the new one, so
+    # a 1.37 resolve would fail on the import rather than warn.
+    "sdv>=1.38",
     # Capped <0.15 because autogluon.timeseries pins it there, and AutoGluon is the more
     # valuable half of this tier. An unbounded `mlforecast>=1.0` makes the whole `strong`
     # extra unresolvable — found by trying to install it, not by reading metadata.
@@ -84,6 +94,18 @@ dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "ruff>=0.7",
+    # `registry/db.py` is the one module whose dependency is deliberately NOT one of this
+    # package's extras — the relational mirror is for hosts that already run a database, so
+    # the runtime install instruction is the bare package name. That left it unexercisable
+    # in a checkout, which is how it stayed unverified. These two put it back within reach
+    # of a test run without adding anything to a production install:
+    #   sqlalchemy[asyncio] — the async ORM the module builds its tables on (pulls greenlet,
+    #     which SQLAlchemy's async bridge needs and which is NOT installed by bare
+    #     `sqlalchemy`; without it every `await` on a session raises at connect time).
+    #   aiosqlite — the async driver behind `sqlite+aiosqlite://`, the only DSN a test can
+    #     use without provisioning PostgreSQL.
+    "sqlalchemy[asyncio]>=2.0",
+    "aiosqlite>=0.20",
 ]
 
 [project.scripts]

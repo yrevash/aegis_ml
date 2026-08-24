@@ -70,7 +70,7 @@ right.
 **Fixed** in `finalplan.md` (D6 and the risk register). `RESOLUTION.md` and `docs/` were
 already correct. Verified: `grep -rn 'AEGIS_ML_TABPFN[^_]' .` returns nothing.
 
-### 5. `docs/` was written against a mid-flight tree
+### 5. ~~`docs/` was written against a mid-flight tree~~ — FIXED
 The documentation agent read the repo while other agents were still writing it, and several
 docs describe `cli.py`, `data/`, `features/`, `explain/`, `registry/`, `monitor/`, `export/`,
 `serve/`, `pipelines/`, `forecast/` as *planned but not present*. They are all present and
@@ -80,7 +80,7 @@ what was built — but "mostly" is not "verified".
 **Fix:** one pass over `docs/03`, `docs/05`, `docs/06`, `docs/07` checking every named
 symbol against the real module. Anything that says "not yet present" is stale.
 
-### 6. `data/synth.py` has never been executed
+### 6. ~~`data/synth.py` has never been executed~~ — FIXED
 Written against SDV 1.37 APIs (`Metadata.detect_from_dataframe`, `update_column`,
 `sdv.single_table.*Synthesizer`, `evaluate_quality`, `sdmetrics.single_table.NewRowSynthesis`)
 while SDV was not installed. SDV **1.38.1** is now in `.venv-ml`, and 1.38 ≠ 1.37 — the
@@ -101,7 +101,7 @@ Both found by measurement, both now documented in the module docstring, neither 
 and nothing in Aegis serves ONNX, so this is currently a documented limitation rather than a
 blocker. If it is ever turned on, the NaN behaviour must be surfaced on the model card.
 
-### 8. Three submodules are shadowed by function re-exports
+### 8. ~~Three submodules are shadowed by function re-exports~~ — FIXED
 `data.profile`, `automl.search` and `explain.reason_codes` are each a module whose package
 `__init__` re-exports a function of the same name, so `aegis_ml.data.profile` resolves to
 the function and `from aegis_ml.data.profile import ...` breaks. This caused two real
@@ -111,20 +111,23 @@ but the trap is still armed for the next caller.
 **Fix:** rename either the function or the module in each pair. `profile_frame`,
 `run_search`, `build_reason_codes` would all read fine.
 
-### 9. `registry/db.py` cannot be exercised in the serving venv
+### 9. ~~`registry/db.py` cannot be exercised in the serving venv~~ — FIXED
 It needs `sqlalchemy[asyncio]` (which needs `greenlet`) and `aiosqlite` for tests; neither is
 in `.venv`. It was verified live against a real async SQLite database by installing them
 temporarily, then uninstalling to leave the venv as found.
 
 **Fix:** add both to the `[dev]` extra so the module is testable by default.
 
-### 10. `eval_flow` with no frame is in-sample
+### 10. ~~`eval_flow` with no frame is in-sample~~ — FIXED
 Re-scoring a registered run without supplying fresh data uses the run's whole reference
 frame, training rows included. It is now labelled `IN-SAMPLE` in the output and explicitly
 not presented as generalisation evidence — but the default is still the misleading one.
 
-**Fix:** consider requiring an explicit `--allow-in-sample` flag rather than labelling
-after the fact.
+**Fixed.** `eval_flow` now takes `allow_in_sample: bool = False` and raises
+`InSampleEvaluationError` otherwise; `aegis-ml eval` gained `--allow-in-sample`. Verified:
+refusal exits 1, opt-in exits 0 and reports `r2=0.7587` **labelled IN-SAMPLE** against the
+honest held-out `0.7224` — which is precisely the optimism the default now refuses to
+produce silently.
 
 ---
 

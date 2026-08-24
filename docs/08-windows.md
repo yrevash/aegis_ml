@@ -194,11 +194,11 @@ Identical on both platforms — `uv run` handles the interpreter.
 ```powershell
 Set-Location C:\aegis_ml
 uv run aegis-ml doctor
-uv run aegis-ml contract
-uv run aegis-ml train --tier all
-uv run aegis-ml eval
-uv run aegis-ml promote
-uv run aegis-ml drift
+uv run aegis-ml contract --data frame.parquet --problem problem.json
+uv run aegis-ml train --problem problem.json --data frame.parquet
+uv run aegis-ml eval --run-id $RunId --data fresh.parquet
+uv run aegis-ml promote --run-id $RunId
+uv run aegis-ml drift --run-id $RunId --data live.parquet
 ```
 
 ---

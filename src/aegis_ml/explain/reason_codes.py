@@ -15,7 +15,7 @@ agent's context. That is what makes this function live, and this module is what 
 
 Three public functions, in increasing order of commitment:
 
-* :func:`reason_codes` — one sentence per driver, in the domain's units.
+* :func:`build_reason_codes` — one sentence per driver, in the domain's units.
 * :func:`describe_prediction_text` — the whole decision-support block, including the
   conformal interval, its confidence, and the provenance signals the existing adapter
   version leaves out.
@@ -30,6 +30,12 @@ one-hot indicator ``1.0``, which names no level. ``value_label`` carries the lev
 sentence built here prefers the label, so a driver reads ``region = emea`` and never
 ``region = 1.0`` — a sentence a human is asked to act on must name the thing, not its
 encoding.
+
+The driver function is :func:`build_reason_codes`, not ``reason_codes``. The module keeps the
+short name — it is the documented import path — while the function takes the prefixed one,
+because ``aegis_ml.explain.__init__`` re-exports it and a function re-exported under its own
+module's name shadows that module on the package: ``aegis_ml.explain.reason_codes`` would
+resolve to the function, and importing anything else out of this module by path would fail.
 """
 
 from __future__ import annotations
@@ -43,9 +49,9 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Sequence
 
 __all__ = [
+    "build_reason_codes",
     "describe_prediction_text",
     "emit_describe_prediction_source",
-    "reason_codes",
 ]
 
 
@@ -120,7 +126,7 @@ def _render_value(feature: object, problem: MLProblem) -> str:
     return number
 
 
-def reason_codes(
+def build_reason_codes(
     resp_like: object,
     problem: MLProblem,
     *,
@@ -241,7 +247,7 @@ def describe_prediction_text(
             f"(1 = the model excluded every other class at this confidence)"
         )
 
-    codes = reason_codes(resp_like, problem, top_k=top_k)
+    codes = build_reason_codes(resp_like, problem, top_k=top_k)
     if codes:
         lines.append("- Why:")
         lines.extend(f"  - {code}" for code in codes)

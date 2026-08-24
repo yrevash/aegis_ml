@@ -293,11 +293,12 @@ The pandera step matters more than it looks. `aegis.ml.model.train` one-hot-enco
 ### 7.3 `realism_report` — the numbers you quote in the demo
 
 ```python
-from aegis_ml.data.profile import realism_report
+from aegis_ml.data.latent import realism_report
 
-report = realism_report(frame, problem)
-print(report.to_markdown())
+report = realism_report(frame, problem, latent, seed=7)   # returns a plain dict
 ```
+
+It lives in `aegis_ml.data.latent`, beside the latent model whose calibration it reads — not in `aegis_ml.data.profile`. Pass the `LatentModel` that produced the frame: without it the calibration-derived fields are **omitted rather than guessed**, because this function never infers a latent function it was not shown.
 
 Reports, per the requirements table in §6:
 
@@ -312,7 +313,7 @@ Reports, per the requirements table in §6:
 | correlation heat map | Unintended near-duplicates |
 | features with ~zero SHAP | Requirement 6 confirmed |
 
-`aegis_ml.data.profile` also exposes `skrub`'s `TableReport` for a free interactive HTML profile — `report.to_html(path)` — which drops straight into a demo tab.
+`aegis_ml.data.profile.profile_frame(frame, out_html=<path>)` is the companion: a JSON-safe per-column summary always, plus skrub's `TableReport` written to `out_html` when you ask for one — a free interactive HTML profile that drops straight into a demo tab.
 
 ### 7.4 The native backstop
 

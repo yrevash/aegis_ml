@@ -90,6 +90,7 @@ __all__ = [
     "REALISM_R2_BAND",
     "DataBundle",
     "FrameSourceMissingError",
+    "InSampleEvaluationError",
     "ResumeMismatchError",
     "data_flow",
     "drift_flow",
@@ -134,6 +135,30 @@ class FrameSourceMissingError(AegisMLError):
             f"reference frame can be reused (`aegis-ml registry`)."
         )
         self.domain_id = domain_id
+
+
+class InSampleEvaluationError(AegisMLError):
+    """``eval_flow`` was asked to re-score with no fresh data and no explicit opt-in.
+
+    Labelling a misleading number after the fact still leaves it the default, and the
+    default is what gets read. Re-scoring on the run's own frozen reference frame measures
+    the model on the rows it was fitted on; the result is optimistic by construction and is
+    not evidence about unseen data. It is still a useful *integrity* check — the artifact
+    loads, deserialises and predicts — which is why it stays reachable behind an explicit
+    flag rather than being removed.
+    """
+
+    def __init__(self, run_id: str) -> None:
+        """Say what the default would have measured, and how to ask for it on purpose."""
+        super().__init__(
+            f"Re-scoring run {run_id!r} with no fresh frame would measure it on its own "
+            f"frozen reference frame — the WHOLE dataset, training rows included. That "
+            f"number is optimistic by construction and is not evidence about unseen data, "
+            f"so it is not the default. Supply fresh labelled data (frame=<DataFrame>, "
+            f"source=<path>, or `--data`), or pass allow_in_sample=True to ask for the "
+            f"artifact-loads-and-predicts integrity check on purpose."
+        )
+        self.run_id = run_id
 
 
 class ResumeMismatchError(AegisMLError):
@@ -439,7 +464,7 @@ def _run_data_stages(
     def profile(record: StageRecord) -> Any:  # noqa: ANN401
         # Imported from the full module path: ``aegis_ml.data.__init__`` re-exports the
         # function ``profile``, which shadows the submodule of the same name on the package.
-        from aegis_ml.data.profile import profile as profile_frame
+        from aegis_ml.data.profile import profile_frame
 
         target = profile_path or (settings.reports_dir / f"{problem.domain_id}_profile.html")
         Path(target).parent.mkdir(parents=True, exist_ok=True)
@@ -1026,9 +1051,7 @@ def train_flow(  # noqa: PLR0915 - one linear pipeline; splitting it would hide 
                 )
                 record.note(f"search ran in the isolated trainer venv: {settings.trainer_venv}")
             else:
-                # Full module path: ``aegis_ml.automl.__init__`` re-exports the function
-                # ``search``, which shadows the submodule of the same name.
-                from aegis_ml.automl.search import search as run_search
+                from aegis_ml.automl.search import run_search
 
                 found = run_search(
                     bundle.train,
@@ -1389,6 +1412,56 @@ def train_flow(  # noqa: PLR0915 - one linear pipeline; splitting it would hide 
             register,
         )
 
+        def visuals(record: StageRecord) -> str:
+            from aegis_ml.report.bundle import build_bundle
+
+            # The split is a function of these three arguments and of nothing else, and the
+            # bundle re-derives it from the frozen reference frame. Recording them means a
+            # later `aegis-ml visuals` rebuild reads the split parameters instead of
+            # searching for them, and can prove it has the same held-out rows this stage did.
+            (run_dir / "split.json").write_text(
+                json.dumps(
+                    {
+                        "seed": resolved_seed,
+                        "test_size": test_size,
+                        "calibration_size": calibration_size,
+                        "training_size": train_rows,
+                        "calibration_size_rows": calib_rows,
+                        "test_size_rows": test_rows,
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            directory = build_bundle(resolved_run_id)
+            manifest_path = directory / "manifest.json"
+            summary = json.loads(manifest_path.read_text(encoding="utf-8"))
+            record.metric("figures_rendered", float(summary["rendered"]))
+            record.metric("figures_omitted", float(summary["omitted"]))
+            record.artifact("visuals", directory / "index.html")
+            for figure in summary["plots"]:
+                if figure["status"] != "rendered":
+                    record.note(f"{figure['file']} omitted: {figure['reason']}")
+            record.note(
+                f"{summary['rendered']} figures written to {directory} — open index.html; "
+                f"every number on them comes from this run's own artifacts"
+            )
+            return str(directory)
+
+        graph.run(
+            StageSpec(
+                name="visuals",
+                description="per-run figures and the self-contained index.html",
+                inputs=("entry",),
+                outputs=("visuals_dir",),
+                # Optional for the same reason the SHAP and card stages are: losing a chart
+                # must never lose a trained model. The failure is written into the manifest
+                # and into the run's notes, so it is loud without being fatal.
+                optional=True,
+            ),
+            visuals,
+        )
+
         entry = ctx.get("entry")
         if entry is not None and entry.result.artifact_path:
             result.artifact_path = entry.result.artifact_path
@@ -1415,6 +1488,7 @@ def eval_flow(
     frame: Any | None = None,  # noqa: ANN401
     *,
     source: str | Path | Callable[[], Any] | None = None,
+    allow_in_sample: bool = False,
     manifest: RunManifest | None = None,
     quiet: bool = False,
 ) -> TrainResult:
@@ -1433,6 +1507,11 @@ def eval_flow(
             fitted on, so the number it produces is expected to be *better* than the
             registered one and is recorded as in-sample rather than presented as evidence.
         source: A path or callable to load the frame from, when ``frame`` is ``None``.
+        allow_in_sample: Permit the no-fresh-data path. That frame is the **whole**
+            dataset, including the rows the model was fitted on, so the number it produces
+            is expected to be *better* than the registered one. It is an integrity check
+            that the artifact loads and predicts, and nothing more. Off by default because
+            labelling a misleading number after the fact still leaves it the default.
         manifest: An open manifest to append to.
         quiet: Suppress the console summary table.
 
@@ -1444,6 +1523,7 @@ def eval_flow(
 
     Raises:
         FileNotFoundError: The run has no persisted model or no stored problem spec.
+        InSampleEvaluationError: No frame, no source, and ``allow_in_sample`` is False.
         InsufficientLabelsError: Propagated when the fresh frame carries too few labels.
     """
     from aegis_ml.registry import store
@@ -1495,6 +1575,8 @@ def eval_flow(
                 fresh, provenance = _resolve_frame(problem, None, source)
                 record.note(f"re-scoring on {provenance}")
             else:
+                if not allow_in_sample:
+                    raise InSampleEvaluationError(run_id)
                 reference = entry.paths.get("reference_frame")
                 if not reference or not Path(reference).exists():
                     raise FrameSourceMissingError(problem.domain_id)
@@ -1938,6 +2020,41 @@ def drift_flow(
         )
 
         (run_dir / "drift.json").write_text(report.model_dump_json(indent=2), encoding="utf-8")
+
+        def visuals(record: StageRecord) -> str:
+            from aegis_ml.report.bundle import build_bundle
+
+            # The live frame is persisted next to the reference it was compared against.
+            # Without it the drift figure could only be redrawn from the verdict — which
+            # says *that* seven features moved and not *how*, and the shape of the move is
+            # what separates a hot season from a broken feed.
+            current_path = run_dir / "current.parquet"
+            _pd()  # fail here, naming the install, rather than inside to_parquet
+            current_frame.to_parquet(current_path, index=False)
+            record.artifact("current_frame", current_path)
+            directory = build_bundle(run_id, current_frame=current_frame)
+            summary = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+            record.metric("figures_rendered", float(summary["rendered"]))
+            record.metric("figures_omitted", float(summary["omitted"]))
+            record.artifact("visuals", directory / "index.html")
+            record.note(
+                f"{summary['rendered']} figures rebuilt at {directory}, now including the "
+                f"reference-vs-current overlay for the features this run flagged"
+            )
+            return str(directory)
+
+        graph.run(
+            StageSpec(
+                name="visuals",
+                description="rebuild the run's figures, now with the drift overlay",
+                inputs=("report",),
+                outputs=("visuals_dir",),
+                # Optional: a drift verdict that was measured is not lost because a chart
+                # of it could not be drawn. The failure is recorded in this manifest.
+                optional=True,
+            ),
+            visuals,
+        )
     except BaseException as exc:
         if owns:
             finish_manifest(active, error=exc)

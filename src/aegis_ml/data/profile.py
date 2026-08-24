@@ -26,6 +26,14 @@ What the summary is looking for, and why each field earns its place:
   the feature count the model card claims to have used.
 * ``top_levels`` — the levels actually present, which is what an ``isin`` violation in
   :mod:`aegis_ml.contracts.frames` will be diagnosed against.
+
+The entry point is :func:`profile_frame`, not ``profile``. The module keeps the short name
+because it is the stable, documented import path; the function takes the longer one because
+``aegis_ml.data.__init__`` re-exports it, and a function re-exported under its own module's
+name shadows that module on the package. ``aegis_ml.data.profile`` then resolves to a
+function and ``from aegis_ml.data.profile import summarize_column`` raises ``ModuleNotFound``
+for a module that is right there. That collision cost two debugging sessions before the
+rename.
 """
 
 from __future__ import annotations
@@ -43,7 +51,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
     import pandas as pd
 
-__all__ = ["DEFAULT_TOP_LEVELS", "profile", "summarize_column", "summarize_columns"]
+__all__ = ["DEFAULT_TOP_LEVELS", "profile_frame", "summarize_column", "summarize_columns"]
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +158,7 @@ def summarize_columns(frame: pd.DataFrame) -> dict[str, dict[str, Any]]:
     return {str(name): summarize_column(frame[name]) for name in frame.columns}
 
 
-def profile(
+def profile_frame(
     frame: pd.DataFrame,
     *,
     out_html: str | Path | None = None,

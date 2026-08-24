@@ -277,12 +277,13 @@ def _reason_codes(response: Any, problem: MLProblem | None, top_k: int) -> dict[
                 "problem=<MLProblem> to ml_tool_specs() to get them."
             )
         }
-    # Full module path: ``aegis_ml.explain.__init__`` re-exports the function
-    # ``reason_codes``, which shadows the submodule of the same name on the package.
-    from aegis_ml.explain.reason_codes import describe_prediction_text, reason_codes
+    # Imported here, not at module scope: this tool module is imported to *register* tool
+    # specs long before any prediction is explained, and the explain package pulls in the
+    # model-card renderers with it.
+    from aegis_ml.explain.reason_codes import build_reason_codes, describe_prediction_text
 
     return {
-        "codes": reason_codes(response, problem, top_k=top_k),
+        "codes": build_reason_codes(response, problem, top_k=top_k),
         "text": describe_prediction_text(response, problem, top_k=top_k),
     }
 

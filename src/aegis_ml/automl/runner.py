@@ -169,7 +169,7 @@ def run_in_trainer_venv(
     timeout: int | None = None,
     workdir: str | Path | None = None,
 ) -> tuple[Recipe, Leaderboard]:
-    """Run :func:`aegis_ml.automl.search.search` inside the trainer venv and read it back.
+    """Run :func:`aegis_ml.automl.search.run_search` in the trainer venv and read it back.
 
     Args:
         frame: The training frame; written to parquet for the child.
@@ -185,7 +185,7 @@ def run_in_trainer_venv(
             directory is used and removed.
 
     Returns:
-        ``(recipe, leaderboard)`` — the same pair :func:`aegis_ml.automl.search.search`
+        ``(recipe, leaderboard)`` — the same pair :func:`aegis_ml.automl.search.run_search`
         returns in-process, having crossed the venv boundary as JSON.
 
     Raises:

@@ -40,9 +40,9 @@ from aegis_ml.explain.pdp import (
 )
 from aegis_ml.explain.pdp import render_html as render_pdp_html
 from aegis_ml.explain.reason_codes import (
+    build_reason_codes,
     describe_prediction_text,
     emit_describe_prediction_source,
-    reason_codes,
 )
 from aegis_ml.explain.shap_report import (
     ExplainerUnavailableError,
@@ -59,13 +59,13 @@ __all__ = [
     "PDPCurve",
     "PartialDependenceUnavailableError",
     "build_card",
+    "build_reason_codes",
     "describe_prediction_text",
     "emit_describe_prediction_source",
     "global_importance",
     "local_explanation",
     "measure_missingness",
     "partial_dependence_curves",
-    "reason_codes",
     "render_html",
     "render_markdown",
     "render_pdp_html",

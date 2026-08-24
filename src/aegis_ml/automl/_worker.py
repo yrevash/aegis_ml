@@ -9,7 +9,7 @@ Its contract is deliberately tiny, because everything it does happens where the 
 cannot see it:
 
 * read ``request.json`` and ``frame.parquet`` from the directory named on the command line;
-* run :func:`aegis_ml.automl.search.search` with exactly the arguments requested;
+* run :func:`aegis_ml.automl.search.run_search` with exactly the arguments requested;
 * write ``recipe.json`` and ``leaderboard.json`` back into the same directory;
 * on any failure, write ``error.json`` with the full traceback and exit non-zero.
 
@@ -37,7 +37,7 @@ from aegis_ml.automl.runner import (
     RECIPE_FILENAME,
     REQUEST_FILENAME,
 )
-from aegis_ml.automl.search import search
+from aegis_ml.automl.search import run_search
 from aegis_ml.automl.tiers import TABPFN_LICENSE_NOTICE, tier_status
 from aegis_ml.contracts.spec import MLProblem
 
@@ -75,7 +75,7 @@ def _run(directory: Path) -> int:
         f"target {problem.target.name!r} ({problem.target.task}), metric {problem.metric!r}"
     )
 
-    recipe, leaderboard = search(
+    recipe, leaderboard = run_search(
         frame,
         problem,
         tiers=request.get("tiers"),

@@ -104,11 +104,11 @@ Nothing about ML is persisted relationally in Aegis today. `aegis.ml` loads exac
 
 ### Decision
 
-**The filesystem is the source of truth.** `registry_store/` holds immutable run directories, a `champion/<domain_id>.json` pointer, and a `.previous.json` for rollback. Promotion = the five-criterion gate passes → **atomic replace** of `backend/.artifacts/ml_spine.joblib`, with the previous artifact retained.
+**The filesystem is the source of truth.** `registry_store/` holds immutable run directories plus a derived, rebuildable `index.json`. There is no champion pointer file: the champion is the run whose `RegistryEntry.stage` is `"production"`, and displaced champions become `"archived"`. Promotion = the five-criterion gate passes → **atomic replace** of `backend/.artifacts/ml_spine.joblib`, with the outgoing artifact's bytes copied into its own run directory first, so rollback restores exactly what was serving.
 
 **MLflow 3 is an optional mirror** (`AEGIS_ML_ENABLE_MLFLOW=1`), for the demo UI and lineage, never the source of truth.
 
-**Three optional SQLAlchemy tables on `AegisBase`** — `ml_runs`, `ml_predictions`, `ml_drift_reports` — fill the relational gap, off by default.
+**Three optional SQLAlchemy tables** — `ml_runs`, `ml_predictions`, `ml_drift_reports` — fill the relational gap, off by default. They register on `aegis.data.AegisBase` when it is importable and on a local `MLBase` otherwise; which one happened is recorded on `MLTables.base_origin` rather than guessed.
 
 ### Consequences
 

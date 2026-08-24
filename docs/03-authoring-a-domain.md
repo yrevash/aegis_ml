@@ -135,8 +135,8 @@ def describe_prediction(resp, *, top_k: int = 3) -> str
 
 - **No heavyweight imports at module scope.** Keep this module pure Python + pydantic so it loads and tests without numpy/pandas/xgboost present. `training_frame` imports pandas *inside the function*.
 - **The keyword is `num_records`.** Not `num_rows`, not your domain's noun. `aegis.adapter.MLSpecModule` names it.
-- `describe_prediction` output is **injected into the plan as evidence**. Re-voice it or it will name the old target and unit out loud in front of a jury.
-- Prefer generating this file: `aegis_ml.contracts.spec.emit_ml_spec_module(problem)` writes exactly the five names `MLSpecModule` requires and `resolve_spec` reads.
+- `describe_prediction` output is **injected into the plan as evidence**. Re-voice it or it will name the old target and unit out loud in front of a jury. `aegis_ml.explain.reason_codes.emit_describe_prediction_source(problem)` generates that function's source for you, and parses it with `ast.parse` before returning it — generated code that does not compile takes down the adapter's import and, with it, `resolve_spec`'s ability to find `FEATURE_NAMES`, which fails over to a four-column noise spec **without raising**.
+- Start from the template rather than a blank file: `aegis-ml init --domain-id <id> --templates <dir>` copies `templates/adapter/`, whose `ml_spec.py` already declares the five names `MLSpecModule` requires and `resolve_spec` reads. `aegis_ml.contracts.spec.MLProblem` is the machine-readable half of the same thing, and `--out problem.json` writes a validated scaffold of it.
 
 **Trap — this one costs a demo.** The generator must sample labels **around your latent function**. If it does not, the target is noise, the model finds nothing, and the conformal interval is honestly enormous. The coupling is kept in piece 3; the function you must call is defined here. See `docs/04-synthetic-data.md`.
 
@@ -184,8 +184,9 @@ Three properties to copy:
 **Verify.**
 ```bash
 (cd /Users/yrevash/aegis/backend && PYTHONPATH=src:../aegis/src .venv/bin/python -m pytest tests/adapter/test_generator.py -q)
-# and, before anything expensive:
-cd /Users/yrevash/aegis_ml && uv run aegis-ml contract
+# and, before anything expensive (--data is required; --adapter names a module exposing PROBLEM):
+cd /Users/yrevash/aegis_ml && uv run aegis-ml contract \
+    --data frame.parquet --adapter reference.adapter.ml_spec
 ```
 
 ---
@@ -484,7 +485,8 @@ where `day_confounder` is drawn once per `TheatreDay` from the same `rng` and ne
 
 ```bash
 cd /Users/yrevash/aegis_ml
-uv run aegis-ml contract          # pandera schema + assert_learnable + leakage scan
+# --data is required; the spec comes from --problem <path> or --adapter <module with PROBLEM>
+uv run aegis-ml contract --data frame.parquet --adapter reference.adapter.ml_spec
 ```
 
 If `assert_learnable` raises `LabelNotLearnableError`, **stop**. Nothing downstream is worth running. Go to `docs/04-synthetic-data.md` §6.

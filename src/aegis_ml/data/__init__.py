@@ -10,7 +10,8 @@ believable number rather than an error:
    ``SKILL.md`` names and no Aegis conformance check performs.
 2. :mod:`~aegis_ml.data.splits` reproduces ``aegis.ml.model.train``'s three-way split
    exactly, guards the calibration size MAPIE needs, and refuses to shuffle a time series.
-3. :mod:`~aegis_ml.data.profile` describes a frame for a machine and for a human.
+3. :mod:`~aegis_ml.data.profile` describes a frame for a machine and for a human,
+   through :func:`~aegis_ml.data.profile.profile_frame`.
 4. :mod:`~aegis_ml.data.contract_check` runs the schema, learnability and structural checks
    together and returns one report.
 
@@ -43,7 +44,7 @@ from aegis_ml.data.latent import (
     measure_learnability,
     realism_report,
 )
-from aegis_ml.data.profile import profile, summarize_column, summarize_columns
+from aegis_ml.data.profile import profile_frame, summarize_column, summarize_columns
 from aegis_ml.data.splits import (
     ThreeWaySplit,
     grouped_split,
@@ -82,7 +83,7 @@ __all__ = [
     "grouped_split",
     "measure_learnability",
     "min_calibration_rows",
-    "profile",
+    "profile_frame",
     "quality_report",
     "realism_report",
     "sample",

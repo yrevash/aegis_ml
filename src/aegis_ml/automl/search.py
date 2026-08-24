@@ -28,6 +28,13 @@ the other tiers' results, and must not disappear either. Every failure lands in
 ``Leaderboard.tiers_skipped`` carrying its exception type and message. If *nothing*
 produced a candidate, the search raises: an empty leaderboard is never returned as a
 result.
+
+The entry point is :func:`run_search`, not ``search``. The module keeps the short name — it
+is the documented import path — while the function takes the longer one, because
+``aegis_ml.automl.__init__`` re-exports it and a function re-exported under its own module's
+name shadows that module on the package: ``aegis_ml.automl.search`` would resolve to the
+function, and ``from aegis_ml.automl.search import score_predictions`` would fail on a module
+that is plainly present.
 """
 
 from __future__ import annotations
@@ -61,8 +68,8 @@ __all__ = [
     "HOLDOUT_FRACTION",
     "METRIC_HIGHER_IS_BETTER",
     "MIN_SEARCH_ROWS",
+    "run_search",
     "score_predictions",
-    "search",
 ]
 
 HOLDOUT_FRACTION: float = 0.25
@@ -803,7 +810,7 @@ def _search_tabpfn(ctx: _Context) -> tuple[list[_Scored], dict[str, str]]:
     anyway. Its number is an evaluation-only accuracy ceiling.
 
     Every candidate produced here carries :data:`~aegis_ml.automl.tiers.TABPFN_LICENSE_NOTICE`
-    in its detail, and :func:`search` copies it into ``Recipe.notes`` whenever this tier
+    in its detail, and :func:`run_search` copies it into ``Recipe.notes`` whenever this tier
     contributed to the run.
     """
     tabpfn = require("aegis-ml[strong]", "tabpfn")
@@ -898,7 +905,7 @@ _TIER_FUNCTIONS = {
     "tabpfn": _search_tabpfn,
 }
 """Tier → its private implementation. Dispatch is a table so that adding a tier is one
-entry plus one function, and so that :func:`search`'s loop has no tier-specific branch."""
+entry plus one function, and so that :func:`run_search`'s loop has no tier-specific branch."""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -944,7 +951,7 @@ def _ceiling_note(best: Candidate, chosen: Candidate, metric: str) -> str:
     )
 
 
-def search(
+def run_search(
     frame: pd.DataFrame,
     problem: MLProblem,
     *,

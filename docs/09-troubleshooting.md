@@ -281,7 +281,7 @@ Never `pip install autogluon` into `backend/.venv`. See §17.
 **Diagnose:**
 
 ```bash
-uv run aegis-ml drift --run <run_id> --current <live.parquet> --verbose
+uv run aegis-ml drift --run-id <run_id> --data <live.parquet>
 ```
 
 Read `n_current_rows` and `drifted_features` from the `DriftReport`.

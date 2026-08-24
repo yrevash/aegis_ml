@@ -131,8 +131,10 @@ class MLProblem(BaseModel):
 
     * ``aegis_ml.contracts.frames`` derives the pandera ``DataFrameModel``
     * ``aegis_ml.features.pipeline`` derives the skrub/ColumnTransformer split
-    * ``emit_ml_spec_module`` writes ``ml_spec.py`` with the exact five names
-      ``aegis.adapter.MLSpecModule`` requires and ``resolve_spec`` reads
+    * ``templates/adapter/ml_spec.py`` — copied by ``aegis-ml init --templates`` — declares
+      the exact five names ``aegis.adapter.MLSpecModule`` requires and ``resolve_spec``
+      reads, and ``aegis_ml.explain.reason_codes.emit_describe_prediction_source``
+      generates that module's ``describe_prediction`` from this object
 
     Attributes:
         domain_id: Stable machine id; must match the adapter's ``DOMAIN_ID``.

@@ -3,8 +3,9 @@
 The package's shape follows decision D1 in ``finalplan.md``. Read it in this order:
 
 * :mod:`~aegis_ml.automl.tiers` — what can run here, and why the rest cannot.
-* :mod:`~aegis_ml.automl.search` — run every available tier, score every candidate on one
-  held-out split, keep the losers, select the best **portable** one.
+* :mod:`~aegis_ml.automl.search` — :func:`~aegis_ml.automl.search.run_search` runs every
+  available tier, scores every candidate on one held-out split, keeps the losers, and
+  selects the best **portable** one.
 * :mod:`~aegis_ml.automl.recipe` — the keystone: the allowlist that decides what may cross
   a venv boundary, and the code that rebuilds it into the exact ``[(name, estimator)]``
   shape ``aegis.ml.model._regression_members()`` returns.
@@ -32,7 +33,7 @@ from aegis_ml.automl.recipe import (
     to_aegis_members,
 )
 from aegis_ml.automl.runner import run_in_trainer_venv, trainer_available
-from aegis_ml.automl.search import score_predictions, search
+from aegis_ml.automl.search import run_search, score_predictions
 from aegis_ml.automl.tiers import (
     TABPFN_LICENSE_NOTICE,
     TIER_ORDER,
@@ -54,9 +55,9 @@ __all__ = [
     "require_tier",
     "resolve_tiers",
     "run_in_trainer_venv",
+    "run_search",
     "save_recipe",
     "score_predictions",
-    "search",
     "tier_status",
     "to_aegis_members",
     "trainer_available",

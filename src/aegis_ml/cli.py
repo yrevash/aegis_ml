@@ -757,14 +757,19 @@ def train(
 @app.command(name="eval")
 def eval_command(
     run_id: str = typer.Option(..., help="The registered run to re-score."),
-    data: Path = typer.Option(None, help="Fresh labelled data; defaults to the run's reference."),
+    data: Path = typer.Option(None, help="Fresh labelled data to re-score on."),
+    allow_in_sample: bool = typer.Option(
+        False, help="Permit re-scoring on the run's own reference frame (IN-SAMPLE)."
+    ),
 ) -> None:
     """Re-score a registered run on data it has never seen.
 
     Args:
         run_id: The run to re-score.
-        data: Fresh labelled data. Omitted, it re-scores on the run's own frozen reference
-            frame — an integrity check that should reproduce the registered number, and it
+        data: Fresh labelled data. Omitted, the flow REFUSES unless --allow-in-sample is
+            given, because the fallback measures the model on its own training rows.
+        allow_in_sample: Ask for that fallback on purpose. It is an integrity check that
+            the artifact loads and predicts, not evidence about unseen data.
             is labelled as such rather than presented as fresh evidence.
 
     Raises:
@@ -773,7 +778,7 @@ def eval_command(
     from aegis_ml.pipelines.flows import eval_flow
 
     try:
-        result = eval_flow(run_id, source=data)
+        result = eval_flow(run_id, source=data, allow_in_sample=allow_in_sample)
     except Exception as exc:  # noqa: BLE001 - the typed refusal's message is the output
         _fail(f"{type(exc).__name__}: {exc}")
         return
@@ -1091,6 +1096,94 @@ def export(
         "NOTE: the conformal interval and the SHAP attributions did NOT export — they are "
         "not part of the ONNX graph. This artifact is a portable point predictor."
     )
+
+
+# ───────────────────────────────────────────────────────────────────────── visuals ──
+
+
+@app.command()
+def visuals(
+    run_id: str = typer.Option(None, help="The registered run to draw. Omit with --all."),
+    rebuild_all: bool = typer.Option(False, "--all", help="Rebuild every registered run."),
+    domain_id: str = typer.Option(None, help="With --all, restrict to one domain."),
+    shap_samples: int = typer.Option(300, help="Rows to explain when recomputing SHAP."),
+    open_it: bool = typer.Option(False, "--open", help="Open index.html when finished."),
+) -> None:
+    """(Re)build a run's visual bundle: ``registry_store/runs/<run_id>/visuals/``.
+
+    The flows write this bundle automatically as their last stage, so this command exists
+    for the two cases that are not a fresh training run: a run registered before the visuals
+    stage existed, and a run whose figures you want back after deleting them. It is a pure
+    function of the run directory, so re-running it on unchanged artifacts reproduces the
+    same bundle rather than a slightly different one.
+
+    A figure whose input is missing is **omitted and explained** in ``manifest.json`` and on
+    the page, never drawn empty — so a non-zero omission count in the output below is
+    information about the run, not a failure of this command.
+
+    Args:
+        run_id: The registered run to draw.
+        rebuild_all: Rebuild every registered run instead of one.
+        domain_id: With ``--all``, restrict to one domain.
+        shap_samples: Rows to explain when recomputing global SHAP attribution.
+        open_it: Open the rendered page in the default browser when finished.
+
+    Raises:
+        typer.Exit: Non-zero when neither ``--run-id`` nor ``--all`` was given, when the run
+            is unknown, or when every requested run failed to build.
+    """
+    from aegis_ml.registry import store
+
+    if not run_id and not rebuild_all:
+        _fail("pass --run-id <run> or --all; there is nothing to draw otherwise")
+        return
+
+    try:
+        targets = (
+            [entry.run_id for entry in store.list_runs(domain_id=domain_id, limit=10_000)]
+            if rebuild_all
+            else [run_id]
+        )
+    except Exception as exc:  # noqa: BLE001 - the typed refusal's message is the output
+        _fail(f"{type(exc).__name__}: {exc}")
+        return
+
+    if not targets:
+        _echo(f"no runs in {settings.registry_dir}")
+        return
+
+    from aegis_ml.report.bundle import build_bundle
+
+    built: list[Path] = []
+    failures: list[tuple[str, str]] = []
+    for target in targets:
+        try:
+            directory = build_bundle(target, shap_max_samples=shap_samples)
+        except Exception as exc:  # noqa: BLE001 - the typed refusal's message is the output
+            failures.append((target, f"{type(exc).__name__}: {exc}"))
+            typer.secho(f"  ✗ {target}: {type(exc).__name__}: {exc}", fg=typer.colors.RED)
+            continue
+        summary = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+        built.append(directory / "index.html")
+        tone = typer.colors.GREEN if summary["omitted"] == 0 else typer.colors.YELLOW
+        typer.secho(
+            f"  ✓ {target}: {summary['rendered']} figures rendered, "
+            f"{summary['omitted']} omitted",
+            fg=tone,
+        )
+        for figure in summary["plots"]:
+            if figure["status"] != "rendered":
+                _echo(f"      - {figure['file']}: {figure['reason']}")
+
+    for path in built:
+        _echo(f"\nopen {path}")
+    if failures and not built:
+        _fail(f"every requested run failed to build; first: {failures[0][1]}")
+        return
+    if open_it and built:
+        import webbrowser
+
+        webbrowser.open(built[0].as_uri())
 
 
 # ──────────────────────────────────────────────────────────────────────── registry ──

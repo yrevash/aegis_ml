@@ -26,17 +26,18 @@ Set-Location C:\aegis_ml; uv sync --extra dev; uv run aegis-ml doctor
 
 Prints and checks:
 
-| Line | What a failure means |
-|---|---|
-| Python, `aegis_ml` version | — |
-| Resolved versions of pandas, numpy, sklearn, xgboost, mapie, shap, pandera | A cap violation. See `docs/09-troubleshooting.md`. |
-| Available AutoML tiers, with a reason per unavailable one | Distinguishes *disabled by policy* from *not installed*. |
-| Trainer venv path and whether its interpreter exists | `TrainerVenvMissingError` — create it, §1.1. |
-| `settings.artifact_path` and whether its directory is writable | Promotion will fail at the last step otherwise. |
-| `settings.aegis_root` and whether the adapter directory exists | Wrong checkout path. Set `AEGIS_ML_AEGIS_ROOT`. |
-| Postgres reachability (only if `AEGIS_ML_POSTGRES_DSN` is set) | Optional; the filesystem registry is complete without it. |
-| The TabPFN licence notice | Informational, always printed when the tier is enabled. |
-| `assert_learnable` against the current adapter's `training_frame` | The big one. See `docs/04-synthetic-data.md`. |
+Six sections, in this order, ending in a one-line `VERDICT`:
+
+| Section | Line | What a failure means |
+|---|---|---|
+| `environment` | Python, `aegis_ml` version, and whether `aegis` itself is importable | `aegis NOT importable` is expected from this venv and is not a failure; run from the backend venv when you need the host. |
+| `resolved versions` | pandas, numpy, sklearn, xgboost, shap, mapie, pandera, skrub, optuna, flaml, evidently, nannyml, joblib, pyarrow, statsforecast, mlforecast, lightgbm, autogluon.tabular, tabpfn, onnxruntime, prefect, mlflow, fastapi — each `not installed` prefixed `!!` | A cap violation, or an optional package genuinely absent. See `docs/09-troubleshooting.md`. |
+| `AutoML tiers` | `RUNS` / `skipped` per tier **with the reason**, then the TabPFN licence notice | Distinguishes *disabled by policy* from *not installed* from *installed but unusable*. This is a projection of `tiers.tier_status()`, not a second implementation of it. |
+| `paths` | trainer venv + interpreter, `artifact_path` (directory writable, artifact present?), `registry_dir`, `reports_dir`, `adapter_dir` | A non-writable `artifact_path` directory means promotion fails at the last step. A missing trainer interpreter is `TrainerVenvMissingError` — create it, §0.1. |
+| `orchestration & storage` | prefect active/inactive, mlflow mirror enabled/disabled, Postgres DSN configured or not | All three optional; the filesystem registry is complete without any of them. |
+| `data realism` | the bands, and the champion run's held-out score against them | The big one. `INSIDE` is the pass; above the band, see `docs/04-synthetic-data.md` §3. |
+
+`doctor` prints `VERDICT: ready` and exits 0 when nothing essential is broken; otherwise it lists each problem and exits 1. Options: `--problem <path>` / `--domain-id <id>` pick which domain's reference frame to check, and `--strict` also exits non-zero when that frame's score is **outside** the realism band rather than merely reporting it.
 
 Also, in the Aegis checkout:
 
@@ -90,8 +91,14 @@ Author **inside `aegis_ml`**, not in the Aegis checkout:
 
 ```bash
 cd /Users/yrevash/aegis_ml
-uv run aegis-ml init --domain <domain_id> --out reference/adapter
+uv run aegis-ml init \
+  --domain-id <domain_id> \
+  --target <target_column> --task regression --unit <unit> \
+  --out problem.json \
+  --templates reference/adapter
 ```
+
+`--out` writes the **`MLProblem` scaffold JSON** (and validates it before writing); `--templates` copies this package's `templates/adapter/` tree into the named directory. They are two separate outputs, and `--force` is needed to overwrite an existing problem file.
 
 Then fill the pieces in order — `schema` → `ml_spec` → `generator` → `tools` → `personas` → `prompts` → `memory_spec` → `roster` → `corpus` → `skills` — using `prompts/01-schema.md` … `prompts/10-skills.md`.
 
@@ -119,10 +126,11 @@ PYTHONPATH=/Users/yrevash/aegis/aegis/src uv run python -c "..."
 ## Step 3 — The cheap gate, before anything expensive
 
 ```bash
-cd /Users/yrevash/aegis_ml && uv run aegis-ml contract
+cd /Users/yrevash/aegis_ml && uv run aegis-ml contract \
+  --data frame.parquet --problem problem.json
 ```
 
-pandera + `assert_learnable` + leakage scan. **Seconds.** If `LabelNotLearnableError` fires, stop and fix the generator — nothing downstream is worth running. See `docs/04-synthetic-data.md` §6.
+pandera + `assert_learnable` + leakage scan. **Seconds.** `--data` is required (`.csv` or `.parquet`); the spec comes from `--problem <path>` or `--adapter <module exposing PROBLEM>`. If `LabelNotLearnableError` fires, stop and fix the generator — nothing downstream is worth running. See `docs/04-synthetic-data.md` §6.
 
 Also run the conformance suite against the authored adapter before you sync anything:
 
@@ -348,17 +356,27 @@ In this order.
 # 9.1 — the Aegis spine, on your spec. distinct=True is the pass signal.
 (cd /Users/yrevash/aegis/backend && PYTHONPATH=src:../aegis/src .venv/bin/python -m app.ml)
 
-# 9.2 — the AutoML search (uses .venv-ml for the strong tiers)
-cd /Users/yrevash/aegis_ml && uv run aegis-ml train --tier all
+# 9.2 — the AutoML search, fit, measure, card, register.
+#       Omit --tier to run every tier that is installed and enabled;
+#       add --trainer-venv to run the strong tiers in .venv-ml.
+cd /Users/yrevash/aegis_ml
+uv run aegis-ml train --problem problem.json --data frame.parquet --trainer-venv
 
-# 9.3 — metrics, coverage, slices, SHAP, card
-uv run aegis-ml eval
+# the train command prints the run_id; everything below takes it
+RUN_ID=<the run_id printed above>
 
-# 9.4 — the five-criterion gate; on pass, writes backend/.artifacts/ml_spine.joblib
-uv run aegis-ml promote
+# 9.3 — re-score on fresh data (omit --data and it re-scores IN-SAMPLE, labelled as such)
+uv run aegis-ml eval --run-id "$RUN_ID" --data fresh.parquet
+
+# 9.4 — the five-criterion gate; on pass, writes backend/.artifacts/ml_spine.joblib.
+#       Exit code 2 on a refusal.
+uv run aegis-ml promote --run-id "$RUN_ID"
 
 # 9.5 — drift + label-free performance estimation
-uv run aegis-ml drift
+uv run aegis-ml drift --run-id "$RUN_ID" --data live.parquet
+
+# or all of it in one manifest, with RUN_SUMMARY.md at the end:
+uv run aegis-ml train --problem problem.json --data frame.parquet --full
 ```
 
 Read the last line of 9.1:
@@ -369,7 +387,7 @@ Read the last line of 9.1:
 
 `distinct=False` means the spine learned nothing. Go to `docs/04-synthetic-data.md`, not to the prompts.
 
-Read `card.json` per `docs/05-ml-pipelines.md` §7: metric in the target band, empirical coverage within tolerance of requested, no collapsed slice, `data_source` not `"synthetic"`, `dataset_digest` present.
+Then read the run directory per `docs/05-ml-pipelines.md` §7 — `metrics.json` for the metric and both coverage numbers, `entry.json` → `result.slices` for the worst slice, `leaderboard.json` for the margin over `baseline`, and `card.md` for all of it in prose: metric in the target band, empirical coverage within tolerance of requested, no collapsed slice, a provenance string that is not `champion_reference:*`, `dataset_digest` present. (`card.json` is not written to disk; `aegis-ml card --run-id "$RUN_ID" --format json` prints it.)
 
 ---
 
@@ -422,23 +440,26 @@ cd /Users/yrevash/aegis_ml && uv run pytest tests -q && uv run ruff check src re
 
 `aegis_ml.serve.tools` ships ready-made `ToolSpec`s that drop into your `TOOL_REGISTRY`:
 
-| Tool | Risk | read_only | idempotent | What it does |
-|---|---|---|---|---|
-| `predict_outcome` | LOW | ✔ | ✔ | Runs the promoted spine on a record and returns the prediction **with its conformal interval** |
-| `explain_prediction` | LOW | ✔ | ✔ | Top-k signed SHAP drivers, rendered by `describe_prediction` |
-| `whatif_scenario` | LOW | ✔ | ✔ | Re-predicts with one or more features overridden, and reports the delta |
-| `forecast_series` | LOW | ✔ | ✔ | The domain demand series with conformal bands |
-| `check_model_health` | LOW | ✔ | ✔ | Champion run id, metric, requested vs empirical coverage, last drift verdict |
+`ML_TOOL_NAMES` is the tuple of all five; `ML_TOOL_RISK` is the single string `"low"` they all carry. Every one asserts `read_only=True`, `destructive=False`, `idempotent=True` — stated per tool rather than derived from the tier.
 
-Wire them in `tools.py`:
+| Tool | Args model | What it does |
+|---|---|---|
+| `predict_outcome` | `PredictOutcomeArgs` | Runs the promoted spine on a record and returns the prediction **with its conformal interval**, plus `imputed_features` / `unknown_features` |
+| `explain_prediction` | `ExplainPredictionArgs` | Top-k signed SHAP drivers, rendered through `explain.reason_codes` (`build_reason_codes` + `describe_prediction_text`) |
+| `whatif_scenario` | `WhatIfScenarioArgs` | Re-predicts with one or more features overridden, and reports the delta |
+| `forecast_series` | `ForecastSeriesArgs` (+ `SeriesPointArg`) | The domain demand series with conformal bands |
+| `check_model_health` | `CheckModelHealthArgs` | Champion run id, metric, requested vs empirical coverage, last drift verdict |
+
+Wire them in `tools.py`. **`ml_tool_specs` returns a `{name: spec}` dict already** — merge it, do not re-derive it:
 
 ```python
 from aegis_ml.serve.tools import ml_tool_specs
+from app.adapter.ml_spec import PROBLEM
 
 TOOL_REGISTRY: dict[str, ToolSpec] = {
-    **{spec.name: spec for spec in ml_tool_specs(ToolSpec)},
     "find_procedures":  ToolSpec(...),
     "resequence_list":  ToolSpec(...),
+    **ml_tool_specs(ToolSpec, problem=PROBLEM, result_cls=ToolActionResult),
 }
 
 ALLOWLIST: dict[str, frozenset[str]] = {
@@ -447,14 +468,33 @@ ALLOWLIST: dict[str, frozenset[str]] = {
 }
 ```
 
-`ml_tool_specs` is handed your own `ToolSpec` class so the tools are constructed in **your** domain's shape — the package does not import from `app.*`, honouring invariant 1.
+Signature: `ml_tool_specs(spec_cls, *, problem=None, risk_low=None, result_cls=None, names=ML_TOOL_NAMES)`.
+
+- `spec_cls` — **your own** `ToolSpec` class. Its constructor is inspected and only the parameters it actually declares are passed, so a class with extra or differently-named fields still works. The package never imports from `app.*`, honouring invariant 1.
+- `problem` — bind your `MLProblem` so summaries carry the target's unit and description rather than bare floats. Omit it and the tools report *why* reason codes are unavailable rather than inventing them.
+- `result_cls` — your host's tool-result class; each handler's `MLToolResult` is adapted into it by keyword, so the domain keeps its native type.
+- It **raises `ValueError`** rather than constructing a half-populated spec if `spec_cls` needs a constructor parameter it cannot supply — the field most likely to be missing is `risk`, and a tool with no risk tier is an ungated action.
 
 This finally gives `describe_prediction` a consumer, and it respects the platform's stated rule: **ML informs, it never gates.** All five tools are LOW and read-only. The human gate still fires on *your* HIGH-risk write tools, never on model confidence.
 
-Verify the round trip:
+Verify the round trip without any host at all — this constructs the specs against a throwaway spec class and asserts the five names and their flags:
 
 ```bash
-cd /Users/yrevash/aegis_ml && uv run pytest tests/test_ml_tools_roundtrip.py -q
+cd /Users/yrevash/aegis_ml && uv run python -c "
+from dataclasses import dataclass
+from typing import Any
+from aegis_ml.serve.tools import ML_TOOL_NAMES, ml_tool_specs
+
+@dataclass(frozen=True)
+class ToolSpec:
+    name: str; description: str; args_model: type; handler: Any
+    risk: Any; read_only: bool = False; destructive: bool = False; idempotent: bool = False
+
+specs = ml_tool_specs(ToolSpec, risk_low='low')
+assert tuple(specs) == ML_TOOL_NAMES, tuple(specs)
+assert all(s.read_only and s.idempotent and not s.destructive for s in specs.values())
+print('ml tool specs:', list(specs))
+"
 ```
 
 ---
