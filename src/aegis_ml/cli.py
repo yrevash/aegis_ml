@@ -1322,6 +1322,218 @@ def serve(
     uvicorn.run(application, host=host, port=port, reload=reload)
 
 
+# ─────────────────────────────────────────────────────────────────────── dashboard ──
+
+
+DASHBOARD_HUB_PORT = 8000
+"""Default port for the hub page."""
+
+DASHBOARD_MLFLOW_PORT = 5000
+"""MLflow's own documented default. On macOS it is usually held by the AirPlay Receiver,
+which is why an unspecified port is allowed to move to the next free one and say so."""
+
+DASHBOARD_OPTUNA_PORT = 8080
+"""Optuna Dashboard's own documented default."""
+
+
+@app.command()
+def dashboard(  # noqa: PLR0913 - one flag per service and per port; collapsing them hides them
+    host: str = typer.Option("127.0.0.1", help="Bind address for all three servers."),
+    port: int = typer.Option(None, help=f"Hub port (default {DASHBOARD_HUB_PORT})."),
+    mlflow_port: int = typer.Option(
+        None, help=f"MLflow UI port (default {DASHBOARD_MLFLOW_PORT})."
+    ),
+    optuna_port: int = typer.Option(
+        None, help=f"Optuna Dashboard port (default {DASHBOARD_OPTUNA_PORT})."
+    ),
+    no_browser: bool = typer.Option(False, "--no-browser", help="Do not open a browser."),
+    no_mlflow: bool = typer.Option(False, "--no-mlflow", help="Do not start the MLflow UI."),
+    no_optuna: bool = typer.Option(False, "--no-optuna", help="Do not start Optuna Dashboard."),
+    backfill_mlflow: bool = typer.Option(
+        True,
+        "--backfill-mlflow/--no-backfill-mlflow",
+        help="Log registry runs into the local MLflow store before starting it. Idempotent.",
+    ),
+) -> None:
+    """Bring up the hub, the MLflow UI and Optuna Dashboard, and open a browser.
+
+    Args:
+        host: Bind address. Loopback by default: the hub exposes model cards, dataset
+            digests and drift reports, none of which should reach a network by accident.
+        port: Hub port. Unset means :data:`DASHBOARD_HUB_PORT`.
+        mlflow_port: MLflow port. Unset means :data:`DASHBOARD_MLFLOW_PORT`, or the next
+            free port when that one is held — announced in the banner and on the panel. A
+            port given explicitly is never moved; if it is busy, the panel says so.
+        optuna_port: Optuna Dashboard port, with the same rule.
+        no_browser: Suppress the browser launch.
+        no_mlflow: Skip MLflow entirely. Its panel then says the flag switched it off.
+        no_optuna: Skip Optuna Dashboard, likewise.
+        backfill_mlflow: Mirror every registry run into ``registry_store/mlflow/`` first,
+            so the MLflow UI has this repository's runs in it rather than being empty.
+            Idempotent — a run already present is skipped, not duplicated.
+
+    Raises:
+        typer.Exit: Non-zero when the hub's own port cannot be bound. That one is fatal
+            because the hub is the page that explains everything else; the two service
+            panels degrade in place instead, each naming its own reason and remedy.
+
+    Ctrl-C terminates the child processes before exiting. An orphaned MLflow server keeps
+    its port, so the next invocation would find it busy and degrade — a failure that looks
+    like the dashboard breaking itself.
+    """
+    import signal
+    import webbrowser
+
+    from aegis_ml.dashboard import hub, server, services
+    from aegis_ml.registry import store
+
+    def _on_terminate(_signum: int, _frame: Any) -> None:  # noqa: ANN401 - a frame object
+        """Turn a SIGTERM into the same clean stop that Ctrl-C already produces.
+
+        Without this, ``kill <pid>`` — what a supervisor, a Makefile target or a shell's
+        job control sends — takes the default action and the process dies before the
+        supervisor's context manager can run. The MLflow and Optuna children then survive,
+        still holding their ports, and the next invocation degrades for a reason nobody
+        can see.
+        """
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, _on_terminate)
+
+    hub_port = port if port is not None else DASHBOARD_HUB_PORT
+    registry_dir = Path(settings.registry_dir)
+
+    if services.port_in_use(host, hub_port):
+        _fail(
+            f"port {hub_port} is already in use, so the hub cannot bind it. Free it, or "
+            f"choose another: aegis-ml dashboard --port {hub_port + 1}"
+        )
+        return
+
+    def read_registry() -> tuple[list[Any], str | None]:
+        """Read the registry index, returning the rows and any failure to read them."""
+        try:
+            return list(store.list_runs()), None
+        except Exception as exc:  # noqa: BLE001 - surfaced on the page, not swallowed
+            return [], f"{type(exc).__name__}: {exc}"
+
+    entries, registry_error = read_registry()
+    if registry_error:
+        typer.secho(f"registry: {registry_error}", fg=typer.colors.YELLOW, err=True)
+    _echo(f"registry: {len(entries)} run(s) in {registry_dir}")
+
+    with services.supervise(host=host, page_port=hub_port, registry_dir=registry_dir) as sup:
+        if no_mlflow:
+            sup.skip(
+                services.MLFLOW_KEY,
+                "MLflow",
+                "Experiment tracking, run comparison and the model registry.",
+                mlflow_port if mlflow_port is not None else DASHBOARD_MLFLOW_PORT,
+                "Switched off for this session with --no-mlflow.",
+            )
+        else:
+            if backfill_mlflow and entries:
+                _backfill_mlflow(entries, registry_dir)
+            _echo("starting MLflow UI …")
+            state = sup.start_mlflow(mlflow_port, DASHBOARD_MLFLOW_PORT)
+            _report_service(state)
+
+        if no_optuna:
+            sup.skip(
+                services.OPTUNA_KEY,
+                "Optuna Dashboard",
+                "Every hyper-parameter trial, including the pruned ones.",
+                optuna_port if optuna_port is not None else DASHBOARD_OPTUNA_PORT,
+                "Switched off for this session with --no-optuna.",
+            )
+        else:
+            _echo("starting Optuna Dashboard …")
+            state = sup.start_optuna(optuna_port, DASHBOARD_OPTUNA_PORT)
+            _report_service(state)
+
+        def payload() -> dict[str, Any]:
+            """Rebuild the page payload from the registry as it is at this instant."""
+            rows, error = read_registry()
+            return hub.collect(
+                rows,
+                registry_dir=registry_dir,
+                services={k: s.as_json() for k, s in sup.states.items()},
+                registry_error=error,
+            )
+
+        httpd = server.build_server(
+            host=host,
+            port=hub_port,
+            page_source=lambda: hub.render(payload()),
+            state_source=payload,
+            services_source=lambda: {k: s.as_json() for k, s in sup.refresh().items()},
+            runs_root=registry_dir / "runs",
+            reports_root=registry_dir / "reports",
+        )
+        url = f"http://{'127.0.0.1' if host in {'0.0.0.0', '::', ''} else host}:{hub_port}/"
+        _echo("")
+        _echo(f"  hub      {url}")
+        for state in sup.states.values():
+            mark = "" if state.running else "  (down — see the panel)"
+            _echo(f"  {state.key:<8} {state.url}{mark}")
+        _echo("")
+        _echo("Ctrl-C to stop everything.")
+        if not no_browser:
+            webbrowser.open(url)
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            _echo("\nstopping …")
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+
+def _report_service(state: Any) -> None:  # noqa: ANN401 - dashboard.services.ServiceState
+    """Print one service's outcome, with its remedy when it did not come up."""
+    if state.running:
+        owner = "started" if state.managed else "already running"
+        typer.secho(f"  {state.label}: {owner} at {state.url}", fg=typer.colors.GREEN)
+        return
+    typer.secho(f"  {state.label}: not running — {state.reason}", fg=typer.colors.YELLOW)
+    if state.remedy:
+        typer.secho(f"    fix: {state.remedy}", fg=typer.colors.YELLOW)
+
+
+def _backfill_mlflow(entries: list[Any], registry_dir: Path) -> None:
+    """Mirror the registry into the dashboard's local MLflow store, reporting the counts.
+
+    Args:
+        entries: Registry rows to log.
+        registry_dir: Registry root; the store is written under ``<registry_dir>/mlflow``.
+
+    A failure here is printed and the dashboard continues: MLflow is a viewer, and losing
+    it must not cost the reader the hub, which is where the authoritative numbers are.
+    """
+    from aegis_ml.dashboard import services as dashboard_services
+    from aegis_ml.registry import mlflow_mirror
+
+    if not is_available("mlflow"):
+        typer.secho(
+            "  mlflow is not installed, so there is nothing to backfill. "
+            "Install it with: uv pip install 'aegis-ml[dashboard]'",
+            fg=typer.colors.YELLOW,
+        )
+        return
+    tracking_uri, _ = dashboard_services.mlflow_store_uri(registry_dir)
+    _echo(f"backfilling MLflow at {tracking_uri} …")
+    try:
+        report = mlflow_mirror.backfill(
+            entries, tracking_uri=tracking_uri, registry_dir=registry_dir
+        )
+    except Exception as exc:  # noqa: BLE001 - reported, and the hub continues regardless
+        typer.secho(f"  backfill failed: {type(exc).__name__}: {exc}", fg=typer.colors.YELLOW)
+        return
+    _echo(f"  {report.summary()}")
+    for run_id, reason in report.failed:
+        typer.secho(f"    {run_id}: {reason}", fg=typer.colors.YELLOW)
+
+
 def main() -> None:
     """Console-script entry point."""
     app()

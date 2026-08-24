@@ -286,7 +286,7 @@ For contrast, so this file is not read as a verdict on the whole package:
 | Evidently drift | stable → 0.000 share `pass`; shifted → 0.429 share `block`, correct columns named |
 | NannyML label-free estimate | `estimated_rmse = 2.07 [1.71, 2.44]` |
 | Optuna HPO | r² 0.6158 → 0.6556 in 12 trials; SQLite study resumes |
-| Test suite | **318 passed**, 0 failed, 0 xfail |
+| Test suite | **323 passed**, 0 failed, 0 xfail |
 | Per-run visuals | 9 PNGs + `index.html` (0 external refs) + `interactive.html`, written automatically by the `visuals` stage in `train_flow` and `drift_flow` |
 | Held-out split provenance | recovered and **verified**: re-scoring the persisted model on the recovered rows reproduces the registered r²=0.722406014223 exactly; a wrong seed gives 0.7805 and is rejected |
 | Trainer-venv subprocess bridge | real child process, identical result in-process vs cross-process; crash path surfaces the traceback |

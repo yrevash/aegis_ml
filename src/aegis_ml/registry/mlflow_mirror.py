@@ -21,14 +21,26 @@ skip: a user who expected a mirror finds out from the log, not from an empty UI.
 from __future__ import annotations
 
 import logging
+import math
+import re
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from aegis_ml._require import require
 from aegis_ml.contracts.protocols import RegistryEntry
 from aegis_ml.settings import settings
 
-__all__ = ["MirrorFailedError", "mirror", "mirror_enabled"]
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from collections.abc import Sequence
+
+__all__ = [
+    "BackfillReport",
+    "MirrorFailedError",
+    "backfill",
+    "mirror",
+    "mirror_enabled",
+]
 
 _LOG = logging.getLogger(__name__)
 
@@ -195,3 +207,183 @@ def mirror(entry: RegistryEntry, *, tracking_uri: str | None = None) -> str | No
         settings.registry_dir,
     )
     return mlflow_run_id
+
+
+# ────────────────────────────────────────────────────────────────────────── backfill ──
+#
+# `mirror` copies one entry as training finishes, and only when AEGIS_ML_ENABLE_MLFLOW is
+# set. That gate is right for the training path — a flaky tracking server must never be
+# able to slow down or fail a run that has already fitted a model. It is wrong for the
+# dashboard, where the user has typed a command whose entire purpose is to populate the
+# MLflow UI. So `backfill` does not consult the flag: the request IS the consent, and the
+# function says so in its own log line rather than reading a setting the caller did not set.
+
+_METRIC_KEY = re.compile(r"[^0-9a-zA-Z_\-./ :]")
+"""Characters MLflow rejects in a metric key.
+
+Slice metric keys are built from real categorical levels — ``route_class=last_mile_pool``,
+but also levels carrying brackets, plus signs or non-ASCII. A rejected key aborts the whole
+run's logging, so the key is rewritten and the *original* is preserved in the run's tags,
+which keeps the mapping recoverable instead of merely surviving.
+"""
+
+
+@dataclass
+class BackfillReport:
+    """What one backfill pass did, run by run.
+
+    Attributes:
+        tracking_uri: Where the runs were written.
+        logged: Run ids newly written into MLflow.
+        skipped: Run ids already present, matched on the ``aegis_ml.run_id`` tag.
+        failed: ``(run_id, reason)`` for runs that could not be written. A failure here is
+            collected rather than raised so that one unreadable run directory cannot stop
+            the other nineteen from reaching the UI — but every one of them is returned,
+            and the caller prints them.
+    """
+
+    tracking_uri: str
+    logged: list[str] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
+    failed: list[tuple[str, str]] = field(default_factory=list)
+
+    @property
+    def total(self) -> int:
+        """How many entries were considered."""
+        return len(self.logged) + len(self.skipped) + len(self.failed)
+
+    def summary(self) -> str:
+        """One line for the terminal, naming all three outcomes even when they are zero."""
+        return (
+            f"mlflow backfill: {len(self.logged)} logged, {len(self.skipped)} already "
+            f"present, {len(self.failed)} failed, of {self.total} registry entries"
+        )
+
+
+def _artifact_files(directory: Path) -> list[tuple[Path, str | None]]:
+    """Return ``(file, artifact_subdirectory)`` pairs to upload for one run.
+
+    Args:
+        directory: The run directory under ``registry_store/runs/``.
+
+    Returns:
+        The JSON/HTML artifacts named in :data:`_ARTIFACT_FILES` at the artifact root, plus
+        every rendered PNG under ``visuals/`` in a ``visuals`` subdirectory. MLflow renders
+        images inline, so uploading the nine figures turns each MLflow run page into the
+        same evidence the hub shows — which is the point of mirroring at all.
+
+    ``model.joblib`` stays excluded for the reason :data:`_ARTIFACT_FILES` gives: promotion
+    copies from the run directory, and an MLflow copy invites the belief that it does not.
+    """
+    pairs: list[tuple[Path, str | None]] = []
+    for name in _ARTIFACT_FILES:
+        candidate = directory / name
+        if candidate.is_file():
+            pairs.append((candidate, None))
+    visuals = directory / "visuals"
+    if visuals.is_dir():
+        for png in sorted(visuals.glob("*.png")):
+            pairs.append((png, "visuals"))
+    return pairs
+
+
+def backfill(
+    entries: Sequence[RegistryEntry],
+    *,
+    tracking_uri: str,
+    registry_dir: Path | None = None,
+) -> BackfillReport:
+    """Write every registry entry into an MLflow store, skipping ones already there.
+
+    Args:
+        entries: Registry rows to mirror, in any order.
+        tracking_uri: The MLflow tracking URI to write to — for the dashboard this is the
+            SQLite store under ``registry_store/mlflow/``, which needs no server of its own
+            to be written and no network to be read.
+        registry_dir: Root the run directories are read from. Defaults to
+            ``settings.registry_dir``.
+
+    Returns:
+        A :class:`BackfillReport`. Per-run failures are collected in it rather than raised.
+
+    Raises:
+        ImportError: When mlflow is not installed, carrying the exact install command.
+
+    Idempotency is by search, not by bookkeeping: before writing, each entry's
+    ``aegis_ml.run_id`` tag is looked up in its experiment, and a hit is skipped. That
+    survives the cases a local ledger would not — a store rebuilt by hand, a second
+    checkout writing into the same database, a backfill interrupted half way through.
+
+    This does **not** consult ``settings.enable_mlflow``. That flag exists to keep a
+    tracking server off the training path; a caller invoking this function has asked for
+    the mirror explicitly, and quietly doing nothing in response would be the silent no-op
+    this repository refuses everywhere else.
+    """
+    mlflow = require("aegis-ml[dashboard]", "mlflow")
+    root = Path(registry_dir if registry_dir is not None else settings.registry_dir)
+    client = mlflow.tracking.MlflowClient(tracking_uri=tracking_uri)
+    report = BackfillReport(tracking_uri=tracking_uri)
+    experiments: dict[str, str] = {}
+
+    for entry in entries:
+        try:
+            name = f"aegis-ml/{entry.domain_id}"
+            if name not in experiments:
+                found = client.get_experiment_by_name(name)
+                if found is not None:
+                    experiments[name] = found.experiment_id
+                else:
+                    # An artifact root has to be named at creation time. Left to MLflow's
+                    # own default this resolves to `./mlruns` relative to the working
+                    # directory — so the figures would land beside the checkout rather
+                    # than inside the registry, and a second invocation from a different
+                    # directory would write a second, unrelated copy.
+                    artifacts = Path(root) / "mlflow" / "artifacts" / entry.domain_id
+                    artifacts.mkdir(parents=True, exist_ok=True)
+                    experiments[name] = client.create_experiment(
+                        name, artifact_location=artifacts.as_uri()
+                    )
+            experiment_id = experiments[name]
+
+            already = client.search_runs(
+                experiment_ids=[experiment_id],
+                filter_string=f"tags.\"aegis_ml.run_id\" = '{entry.run_id}'",
+                max_results=1,
+            )
+            if already:
+                report.skipped.append(entry.run_id)
+                continue
+
+            tags = dict(_tags(entry))
+            tags["mlflow.runName"] = entry.run_id
+            run = client.create_run(experiment_id=experiment_id, tags=tags)
+            mlflow_run_id = run.info.run_id
+
+            for key, value in _params(entry).items():
+                client.log_param(mlflow_run_id, key, value)
+            renamed: dict[str, str] = {}
+            for key, value in _metrics(entry).items():
+                if not math.isfinite(value):
+                    continue
+                clean = _METRIC_KEY.sub("_", key)
+                if clean != key:
+                    renamed[clean] = key
+                client.log_metric(mlflow_run_id, clean, value)
+            for clean, original in renamed.items():
+                client.set_tag(mlflow_run_id, f"aegis_ml.metric_key.{clean}"[:250], original)
+
+            for path, subdir in _artifact_files(root / "runs" / entry.run_id):
+                client.log_artifact(mlflow_run_id, str(path), artifact_path=subdir)
+
+            client.set_terminated(mlflow_run_id, "FINISHED")
+            report.logged.append(entry.run_id)
+        except Exception as exc:  # noqa: BLE001 - collected per run, returned, never hidden
+            report.failed.append((entry.run_id, f"{type(exc).__name__}: {exc}"))
+
+    _LOG.info(
+        "%s (tracking_uri=%s; the filesystem registry at %s remains authoritative)",
+        report.summary(),
+        tracking_uri,
+        root,
+    )
+    return report

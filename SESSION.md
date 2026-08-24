@@ -73,6 +73,7 @@ src/aegis_ml/
   registry/    filesystem store, promote/rollback, optional MLflow + Postgres
   monitor/     prediction log, Evidently drift, NannyML label-free estimation, alerts
   report/      per-run visuals: 12 figure functions, bundle, self-contained index.html
+  dashboard/   `aegis-ml dashboard` — hub page + MLflow UI + Optuna Dashboard, all local
   forecast/    thin wrapper over aegis.forecast + mlforecast candidates
   serve/       FastAPI router + the five ML adapter tools
   pipelines/   7 flows, stage graph with caching/resume, Prefect shim
@@ -124,6 +125,7 @@ Key documents: `finalplan.md` (architecture + SOTA research with sources), `RESO
 | NannyML label-free | `estimated_rmse` ≈ 6.6 (named "estimated" throughout) |
 | AutoGluon | R² 0.5411, 10 models, 20 s |
 | per-run visuals | 9 PNGs + `index.html` (0 external refs) + `interactive.html` |
+| dashboard | `aegis-ml dashboard` — hub 200, MLflow 200, Optuna 200; 0 orphaned processes on shutdown; 0 external network requests |
 
 Reproduce: `.venv/bin/python scripts/run_demo.py`.
 

@@ -80,6 +80,17 @@ strong = [
 # ── TIER: mlops ────────────────────────────────────────────────────────────────
 # Optional mirrors and orchestration. Nothing in the critical path depends on them:
 # the filesystem registry is the source of truth and flows run as plain functions.
+# ── TIER: dashboard ────────────────────────────────────────────────────────────
+# Premade, best-in-class UIs pointed at data this package already writes: MLflow at the
+# registry mirror, Optuna Dashboard at the study SQLite we already persist for resumability.
+# Resolved against the serving caps before being offered — mlflow 3.15.1 and
+# optuna-dashboard 0.20.0 co-install with pandas 2.3.3 / numpy 2.4.6 / sklearn 1.9.0 with no
+# overrides, verified with `uv pip compile`.
+dashboard = [
+    "mlflow>=3.0",
+    "optuna-dashboard>=0.16",
+]
+
 mlops = [
     "mlflow>=3.0",
     "prefect>=3.1",
