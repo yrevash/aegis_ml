@@ -36,3 +36,4 @@ optuna/
 .DS_Store
 scratch/
 *.log
+aegis_ml-handbook.pdf
