@@ -257,7 +257,7 @@ that fixing it "needs a read-side tool in `backend/src/app/adapter/tools.py` (a 
 
 ### 15. Aegis's own reference generator is too easy
 `backend/src/app/adapter/generator.py` uses a flat `noise_scale=4.0` against a latent signal
-spreading ~30 hours, which lands around **R² 0.97–0.98**. That is the "label is a closed-form
+spreading ~20 hours (measured std 19.84 h), which lands at **R² 0.944**, measured 2026-08-28 with HistGradientBoosting on 2,000 rows, 25% held out (`aegis_ml` scores **0.700** on the same method against a declared ceiling of 0.74)**. That is the "label is a closed-form
 function of the inputs" failure this package exists to prevent, present in the code we pattern-
 matched from. Our templates and reference domain use calibrated sigma instead. Not our bug,
 but worth knowing before copying anything from it.

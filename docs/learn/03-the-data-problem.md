@@ -283,7 +283,7 @@ answers the same question in seconds and names it correctly.
 
 Aegis ships its own reference generator at
 `backend/src/app/adapter/generator.py`. It uses a flat `noise_scale = 4.0` against a latent
-signal spreading roughly 30 hours, which lands it around **R² 0.97–0.98**.
+signal spreading roughly 20 hours (measured std 19.84 h), which lands it around **R² 0.944**, measured 2026-08-28 with HistGradientBoosting on 2,000 rows, 25% held out (`aegis_ml` scores **0.700** on the same method against a declared ceiling of 0.74)**.
 
 That is Failure B, present in the code this package pattern-matched from. It is not a bug in
 Aegis — for demonstrating the *platform* it is harmless. But copying it would import the exact

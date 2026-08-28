@@ -155,7 +155,7 @@ re-derives it and accepts a candidate *only if re-scoring the model reproduces t
 metric exactly*. New runs write `split.json`. Never plot from an unverified split.
 
 **Aegis's own repo has defects we deliberately did not inherit** (ISSUES #13–16): its
-reference generator sits at R² 0.97–0.98 (flat `noise_scale=4.0`); four `web/` console files
+reference generator sits at **R² 0.944**, measured 2026-08-28 with HistGradientBoosting on 2,000 rows, 25% held out (`aegis_ml` scores **0.700** on the same method against a declared ceiling of 0.74) (flat `noise_scale=4.0`); four `web/` console files
 carry shipped-domain literals and are outside the Python-only vocabulary scan; its docs
 disagree with themselves on counts. Do not pattern-match its generator.
 
