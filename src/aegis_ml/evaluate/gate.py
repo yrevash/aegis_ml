@@ -422,7 +422,7 @@ def _check_slices(
 
 
 def _check_leakage(
-    leakage: Sequence[object],
+    leakage: Sequence[object] | None,
     checks: dict[str, bool],
     metrics: dict[str, float],
     reasons: list[str],
@@ -430,12 +430,28 @@ def _check_leakage(
     """Criterion 5 — target leakage flagged by the feature audit.
 
     Args:
-        leakage: Findings from ``aegis_ml.features.leakage``; strings, mappings or objects
+        leakage: Findings from ``aegis_ml.features.leakage``. An empty sequence means the
+            audit **ran and found nothing**; ``None`` means it **never ran**, which is not
+            the same thing and must not be reported as if it were.
             carrying a ``feature`` attribute are all understood.
         checks: Mutated in place with ``no_target_leakage``.
         metrics: Mutated in place with the finding count.
         reasons: Mutated in place with the human sentence, pass or fail.
     """
+    if leakage is None:
+        # An audit that never ran is not a clean audit. Reading a missing input as a pass is
+        # the exact failure this package exists to prevent: the gate would print "the feature
+        # audit flagged nothing" about an audit that did not happen, and a leaking feature —
+        # which criterion 1 actively REWARDS, because it produces the best held-out score —
+        # would sail through the one criterion written to catch it.
+        metrics["leakage_findings"] = float("nan")
+        checks["no_target_leakage"] = False
+        reasons.append(
+            "FAIL no_target_leakage: the leakage audit did not run for this run, so nothing "
+            "is known about it. UNPROVEN is not PASS. Re-run `aegis-ml contract` to produce "
+            "gate_inputs.json, or pass leakage=[] explicitly to assert the audit ran clean."
+        )
+        return
     findings = list(leakage)
     metrics["leakage_findings"] = float(len(findings))
     checks["no_target_leakage"] = not findings
@@ -459,7 +475,7 @@ def evaluate_gate(
     champion: TrainResult | None,
     *,
     contract_ok: bool,
-    leakage: Sequence[object],
+    leakage: Sequence[object] | None,
     config: GateConfig | None = None,
 ) -> GateDecision:
     """Run all five criteria and return the full decision, numbers included.

@@ -305,3 +305,24 @@ def test_format_decision_names_the_absent_champion_explicitly() -> None:
     """A blank champion line would read as a missing value rather than a first model."""
     text = format_decision(_gate(train_result("first", 0.6), None))
     assert "(none — first model in this domain)" in text
+
+
+def test_leakage_audit_that_never_ran_is_not_a_pass():
+    """`None` leakage means the audit did not run, which must never read as clean.
+
+    Regression test for a real defect. `flows.promote_flow` fed the gate
+    `gate_inputs.get("leakage", [])`, and an empty list means "the audit ran and found
+    nothing". So a run with no `gate_inputs.json` — the exact case the surrounding code
+    logged as UNPROVEN — was told it had passed criterion 5, and the decision printed
+    "PASS no_target_leakage: the feature audit flagged nothing" about an audit that had
+    never happened. Criterion 1 actively rewards a leaking feature, because leakage
+    produces the best held-out score, so criterion 5 is the only thing standing in its way.
+    """
+    unknown = _gate(train_result("chal", 0.9), None, leakage=None)
+    assert unknown.checks["no_target_leakage"] is False
+    assert not unknown.promoted
+    assert any("did not run" in r for r in unknown.reasons)
+
+    clean = _gate(train_result("chal", 0.9), None, leakage=[])
+    assert clean.checks["no_target_leakage"] is True
+    assert any("flagged nothing" in r for r in clean.reasons)

@@ -1772,7 +1772,12 @@ def promote_flow(
                 entry.result,
                 champion.result if champion is not None else None,
                 contract_ok=bool(gate_inputs.get("contract_ok", False)),
-                leakage=list(gate_inputs.get("leakage", [])),
+                # No default. A missing key must reach the gate as None ("never ran"), not
+                # as [] ("ran, clean") — the note above promises both inputs are treated as
+                # UNPROVEN and until this line only contract_ok actually was.
+                leakage=(
+                    list(gate_inputs["leakage"]) if "leakage" in gate_inputs else None
+                ),
             )
             record.metric("promoted", 1.0 if decision.promoted else 0.0)
             for key, value in decision.metrics.items():
